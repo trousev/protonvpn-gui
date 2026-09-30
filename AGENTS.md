@@ -73,6 +73,27 @@ Running the GUI without a display, for a smoke test: `sway` with `WLR_BACKENDS=h
 `Xwayland`, then `ffmpeg -f x11grab` to photograph the window. The engine's tests never touch the
 real CLI — they drive a stand-in script through `EngineOptions::program`.
 
+Workflows are worth running before they run for real:
+
+```sh
+# a local runner image that has rustup and gh, which the slim act images do not
+docker build -t pvpn-act:24.04 - <<'EOF'
+FROM catthehacker/ubuntu:act-24.04
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential gh \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --default-toolchain 1.97.1 --component rustfmt --component clippy --no-modify-path
+ENV PATH=/root/.cargo/bin:$PATH
+EOF
+
+act pull_request -W .github/workflows/ci.yml -P ubuntu-24.04=pvpn-act:24.04 --pull=false
+act push         -W .github/workflows/release.yml -P ubuntu-24.04=pvpn-act:24.04 --pull=false -s GITHUB_TOKEN=
+```
+
+With an empty `GITHUB_TOKEN` the release script stops after packaging, so `act` exercises
+everything except the upload. The provenance attestation needs GitHub's OIDC endpoint and can only
+be checked by a real run.
+
 ## Conventions
 
 - Rust 2024; `rustfmt` defaults; clippy clean under `-D warnings`.
