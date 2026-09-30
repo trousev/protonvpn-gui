@@ -1,0 +1,4 @@
+Status: Connected
+Server: CH#274 in Zurich, Switzerland
+Load: 44%
+Protocol: wireguard

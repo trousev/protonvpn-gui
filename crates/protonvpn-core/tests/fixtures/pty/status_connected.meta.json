@@ -1,0 +1,12 @@
+{
+  "name": "status_connected",
+  "argv": ["protonvpn", "status"],
+  "command_line": "protonvpn status",
+  "cols": 120,
+  "rows": 40,
+  "exit_code": 0,
+  "duration_ms": 940,
+  "bytes": 93,
+  "ansi_sequences": 0,
+  "had_carriage_return": true
+}

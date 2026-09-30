@@ -1,0 +1,3 @@
+Error: Invalid server ID 'ZZ#99'. Please use a valid server ID from the server list.
+
+Try 'protonvpn connect --help' for more information.

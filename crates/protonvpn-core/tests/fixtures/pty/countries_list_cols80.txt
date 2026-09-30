@@ -1,0 +1,151 @@
+Country                           Code
+--------------------------------  ------
+Afghanistan                       AF
+Albania                           AL
+Algeria                           DZ
+Andorra                           AD
+Angola                            AO
+Argentina                         AR
+Armenia                           AM
+Australia                         AU
+Austria                           AT
+Azerbaijan                        AZ
+Bahrain                           BH
+Bangladesh                        BD
+Belarus                           BY
+Belgium                           BE
+Bhutan                            BT
+Bolivia                           BO
+Bosnia and Herzegovina            BA
+Brazil                            BR
+Brunei                            BN
+Bulgaria                          BG
+Cambodia                          KH
+Cameroon                          CM
+Canada                            CA
+Chad                              TD
+Chile                             CL
+China                             CN
+Colombia                          CO
+Comoros                           KM
+Costa Rica                        CR
+Croatia                           HR
+Cuba                              CU
+Cyprus                            CY
+Czech Republic                    CZ
+Democratic Republic of the Congo  CD
+Denmark                           DK
+Dominican Republic                DO
+Ecuador                           EC
+Egypt                             EG
+El Salvador                       SV
+Eritrea                           ER
+Estonia                           EE
+Ethiopia                          ET
+Finland                           FI
+France                            FR
+Gabon                             GA
+Georgia                           GE
+Germany                           DE
+Ghana                             GH
+Greece                            GR
+Greenland                         GL
+Guatemala                         GT
+Guinea                            GN
+Haiti                             HT
+Honduras                          HN
+Hong Kong                         HK
+Hungary                           HU
+Iceland                           IS
+India                             IN
+Indonesia                         ID
+Iraq                              IQ
+Ireland                           IE
+Israel                            IL
+Italy                             IT
+Ivory Coast                       CI
+Jamaica                           JM
+Japan                             JP
+Jordan                            JO
+Kazakhstan                        KZ
+Kenya                             KE
+Kosovo                            XK
+Kuwait                            KW
+Kyrgyzstan                        KG
+Laos                              LA
+Latvia                            LV
+Lebanon                           LB
+Libya                             LY
+Liechtenstein                     LI
+Lithuania                         LT
+Luxembourg                        LU
+Macao                             MO
+Macedonia                         MK
+Malaysia                          MY
+Malta                             MT
+Mauritania                        MR
+Mauritius                         MU
+Mexico                            MX
+Moldova                           MD
+Monaco                            MC
+Mongolia                          MN
+Montenegro                        ME
+Morocco                           MA
+Mozambique                        MZ
+Myanmar                           MM
+Nepal                             NP
+Netherlands                       NL
+New Zealand                       NZ
+Nicaragua                         NI
+Nigeria                           NG
+Norway                            NO
+Oman                              OM
+Pakistan                          PK
+Palestinian Territory             PS
+Panama                            PA
+Papua New Guinea                  PG
+Paraguay                          PY
+Peru                              PE
+Philippines                       PH
+Poland                            PL
+Portugal                          PT
+Puerto Rico                       PR
+Qatar                             QA
+Romania                           RO
+Russia                            RU
+Rwanda                            RW
+Saudi Arabia                      SA
+Senegal                           SN
+Serbia                            RS
+Singapore                         SG
+Slovakia                          SK
+Slovenia                          SI
+Somalia                           SO
+South Africa                      ZA
+South Korea                       KR
+South Sudan                       SS
+Spain                             ES
+Sri Lanka                         LK
+Sudan                             SD
+Sweden                            SE
+Switzerland                       CH
+Syria                             SY
+Taiwan                            TW
+Tajikistan                        TJ
+Tanzania                          TZ
+Thailand                          TH
+Togo                              TG
+Tunisia                           TN
+Turkey                            TR
+Turkmenistan                      TM
+Uganda                            UG
+Ukraine                           UA
+United Arab Emirates              AE
+United Kingdom                    UK
+United States                     US
+Uruguay                           UY
+Uzbekistan                        UZ
+Venezuela                         VE
+Vietnam                           VN
+Yemen                             YE
+Zimbabwe                          ZW

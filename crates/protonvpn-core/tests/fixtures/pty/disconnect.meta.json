@@ -1,0 +1,12 @@
+{
+  "name": "disconnect",
+  "argv": ["protonvpn", "disconnect"],
+  "command_line": "protonvpn disconnect",
+  "cols": 120,
+  "rows": 40,
+  "exit_code": 0,
+  "duration_ms": 1338,
+  "bytes": 15,
+  "ansi_sequences": 0,
+  "had_carriage_return": true
+}

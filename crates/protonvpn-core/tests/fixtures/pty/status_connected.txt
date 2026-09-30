@@ -1,0 +1,4 @@
+Status: Connected
+Server: NL#818 in Amsterdam, Netherlands
+Load: 59%
+Protocol: wireguard

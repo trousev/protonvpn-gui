@@ -1,0 +1,5 @@
+Connected to CH#274 in Zurich, Switzerland. 
+Your new IP address is 149.88.27.213.
+
+Note: Port forwarding is enabled but this server does not support it.
+Connect to a P2P server to use port forwarding:protonvpn connect --p2p

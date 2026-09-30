@@ -1,0 +1,12 @@
+{
+  "name": "connect_invalid_country",
+  "argv": ["protonvpn", "connect", "--country", "ZZ"],
+  "command_line": "protonvpn connect --country ZZ",
+  "cols": 120,
+  "rows": 40,
+  "exit_code": 2,
+  "duration_ms": 656,
+  "bytes": 124,
+  "ansi_sequences": 0,
+  "had_carriage_return": true
+}

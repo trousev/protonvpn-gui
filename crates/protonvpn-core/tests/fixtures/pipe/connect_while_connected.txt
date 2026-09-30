@@ -1,0 +1,6 @@
+Connected to NL#450 in Amsterdam, Netherlands. 
+Your new IP address is 103.69.224.160.
+
+Port forwarding is active on this server.
+To get your forwarded port, run the natpmpc setup script.
+Guide: https://protonvpn.com/support/port-forwarding-manual-setup#linux

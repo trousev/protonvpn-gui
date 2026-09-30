@@ -1,0 +1,6 @@
+
+Cities in Switzerland:
+City    Features
+------  ----------
+Zurich  P2P, Tor
+

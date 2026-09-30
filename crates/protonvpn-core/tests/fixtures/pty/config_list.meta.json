@@ -1,0 +1,12 @@
+{
+  "name": "config_list",
+  "argv": ["protonvpn", "config", "list"],
+  "command_line": "protonvpn config list",
+  "cols": 120,
+  "rows": 40,
+  "exit_code": 0,
+  "duration_ms": 668,
+  "bytes": 476,
+  "ansi_sequences": 0,
+  "had_carriage_return": true
+}

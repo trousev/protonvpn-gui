@@ -1,0 +1,3 @@
+Error: Invalid country code 'ZZ'. Please use a valid country code.
+
+Try 'protonvpn connect --help' for more information.
