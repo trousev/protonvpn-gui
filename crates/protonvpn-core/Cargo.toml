@@ -1,0 +1,15 @@
+[package]
+name = "protonvpn-core"
+description = "Console-first wrapper around the Proton VPN CLI: runner, log bus, interpreter, launcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+portable-pty.workspace = true
+
+[[bin]]
+name = "capture-fixtures"
+path = "src/bin/capture_fixtures.rs"
