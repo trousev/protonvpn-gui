@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/protonvpn-core"]
+default-members = ["crates/protonvpn-core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +12,20 @@ repository = "https://github.com/trousev/protonvpn-gui"
 
 [workspace.dependencies]
 portable-pty = "0.9"
+# `tiny-skia` and not `wgpu`: a tray companion does not need a GPU, and the software renderer
+# works over plain Wayland/X11 without a driver conversation.
+iced = { version = "0.13", default-features = false, features = [
+    "tiny-skia",
+    "fira-sans",
+    "auto-detect-theme",
+    "advanced",
+    # The window's repaint beat needs an executor; without one iced falls back to a null backend
+    # and `time::every` does not exist at all (`tiny-skia` alone renders, it does not schedule).
+    "tokio",
+] }
+# The `blocking` API puts the StatusNotifierItem on its own thread; `async-io` avoids pulling in a
+# whole async runtime for it. zbus (not libdbus) means no C dependency.
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 
 [profile.release]
 lto = true

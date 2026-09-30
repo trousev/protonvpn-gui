@@ -11,9 +11,63 @@
 //! See `docs/architecture.md` §10.3.
 
 use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+/// The command line as it would be typed, for display in the console.
+///
+/// `argv` is rendered verbatim; only arguments that genuinely need quoting get it, and quoting is
+/// purely cosmetic — the launcher never builds a shell string.
+pub fn command_line(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| shell_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A handle for writing to a running child's terminal, usable from another thread.
+///
+/// This is how `signin` is answered: the child blocks on a password prompt, and whichever thread
+/// the UI is on writes the secret straight to the PTY. Secrets never touch the log bus.
+#[derive(Clone)]
+pub struct PtyStdin {
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+}
+
+impl PtyStdin {
+    pub fn write_line(&self, line: &str) -> std::io::Result<()> {
+        let mut guard = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match guard.as_mut() {
+            Some(writer) => {
+                writer.write_all(line.as_bytes())?;
+                writer.write_all(b"\n")?;
+                writer.flush()
+            }
+            None => Err(std::io::Error::other("the child's terminal is closed")),
+        }
+    }
+
+    /// Close our end of the terminal, so a child waiting on input sees EOF instead of hanging.
+    pub fn close(&self) {
+        let mut guard = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = None;
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
+}
 
 /// A completed invocation, recorded verbatim.
 #[derive(Debug, Clone)]
@@ -41,11 +95,7 @@ impl Invocation {
 
     /// The command line as it would be typed, for display in the console.
     pub fn command_line(&self) -> String {
-        self.argv
-            .iter()
-            .map(|a| shell_quote(a))
-            .collect::<Vec<_>>()
-            .join(" ")
+        command_line(&self.argv)
     }
 }
 
@@ -84,7 +134,7 @@ pub fn run(argv: &[String], cols: u16, rows: u16) -> Result<Invocation, PtyError
 pub struct SpawnedInvocation {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     reader: Box<dyn Read + Send>,
-    writer: Option<Box<dyn Write + Send>>,
+    stdin: PtyStdin,
     argv: Vec<String>,
     cols: u16,
     rows: u16,
@@ -96,14 +146,14 @@ impl SpawnedInvocation {
         &self.argv
     }
 
+    /// A cloneable handle for writing to the child's terminal from another thread.
+    pub fn stdin_handle(&self) -> PtyStdin {
+        self.stdin.clone()
+    }
+
     /// Writes to the child's stdin — used for password / 2FA prompts on `signin`.
     pub fn write_line(&mut self, line: &str) -> std::io::Result<()> {
-        if let Some(w) = self.writer.as_mut() {
-            w.write_all(line.as_bytes())?;
-            w.write_all(b"\n")?;
-            w.flush()?;
-        }
-        Ok(())
+        self.stdin.write_line(line)
     }
 
     /// Reads whatever is available; returns 0 at EOF. Callers stream this into the log bus.
@@ -119,16 +169,38 @@ impl SpawnedInvocation {
         Ok(String::from_utf8_lossy(&raw).into_owned())
     }
 
+    /// Takes the reader out, so a streaming consumer can own it on its own thread.
+    pub fn take_reader(&mut self) -> Box<dyn Read + Send> {
+        std::mem::replace(&mut self.reader, Box::new(std::io::empty()))
+    }
+
+    /// Waits for the child and completes the record.
     pub fn finish(mut self, output: String) -> Result<Invocation, PtyError> {
-        let status = self.child.wait().map_err(|e| PtyError::Io(e.to_string()))?;
+        let status = self.wait()?;
         Ok(Invocation {
             argv: self.argv,
             cols: self.cols,
             rows: self.rows,
-            exit_code: status.exit_code(),
+            exit_code: status,
             output,
             duration: self.started.elapsed(),
         })
+    }
+
+    /// Kills the child. Used only when an invocation exceeds its deadline, so that a wedged
+    /// command cannot leave the application saying "работаю" forever.
+    pub fn kill(&mut self) -> Result<(), PtyError> {
+        self.child.kill().map_err(|e| PtyError::Io(e.to_string()))
+    }
+
+    /// Waits for the child, returning its exit code.
+    pub fn wait(&mut self) -> Result<u32, PtyError> {
+        let status = self.child.wait().map_err(|e| PtyError::Io(e.to_string()))?;
+        Ok(status.exit_code())
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
     }
 }
 
@@ -169,12 +241,32 @@ pub fn spawn(argv: &[String], cols: u16, rows: u16) -> Result<SpawnedInvocation,
     Ok(SpawnedInvocation {
         child,
         reader,
-        writer,
+        stdin: PtyStdin {
+            writer: Arc::new(Mutex::new(writer)),
+        },
         argv: argv.to_vec(),
         cols,
         rows,
         started: Instant::now(),
     })
+}
+
+/// Splits a chunk of PTY output into complete lines, returning the lines and the leftover tail.
+///
+/// The terminal layer translates the CLI's `\n` into `\r\n`, so the carriage return is stripped
+/// here. A bare `\r` (progress overwrite) is kept verbatim inside the text: the console is a
+/// transcript, and losing bytes is worse than showing an ugly line.
+pub fn split_lines(buffer: &mut String) -> Vec<String> {
+    let mut lines = Vec::new();
+    while let Some(index) = buffer.find('\n') {
+        let mut line: String = buffer.drain(..=index).collect();
+        line.pop(); // the '\n'
+        if line.ends_with('\r') {
+            line.pop();
+        }
+        lines.push(line);
+    }
+    lines
 }
 
 /// Removes ANSI escape sequences (CSI, OSC and friends) and normalises CRLF to LF.
@@ -267,5 +359,37 @@ mod tests {
         assert_eq!(shell_quote("--country"), "--country");
         assert_eq!(shell_quote("IT#23"), "IT#23");
         assert_eq!(shell_quote("New York"), "'New York'");
+    }
+
+    #[test]
+    fn renders_a_command_line_for_display() {
+        let argv: Vec<String> = ["protonvpn", "connect", "--city", "New York"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(command_line(&argv), "protonvpn connect --city 'New York'");
+    }
+
+    #[test]
+    fn splits_streamed_lines_and_keeps_the_tail() {
+        let mut buffer = String::from("Status: Connected\r\nServer: NL#818");
+        let lines = split_lines(&mut buffer);
+        assert_eq!(lines, vec!["Status: Connected".to_string()]);
+        assert_eq!(buffer, "Server: NL#818");
+
+        buffer.push_str(" in Amsterdam, Netherlands\r\n");
+        let lines = split_lines(&mut buffer);
+        assert_eq!(
+            lines,
+            vec!["Server: NL#818 in Amsterdam, Netherlands".to_string()]
+        );
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn a_bare_carriage_return_is_preserved_verbatim() {
+        let mut buffer = String::from("progress 10%\rprogress 20%\n");
+        let lines = split_lines(&mut buffer);
+        assert_eq!(lines, vec!["progress 10%\rprogress 20%".to_string()]);
     }
 }
