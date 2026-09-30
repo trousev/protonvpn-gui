@@ -197,7 +197,16 @@ readable and copyable.
   (Background portal, `--own-name`, `--system-talk-name`) is needed. Autostart is a plain
   `~/.config/autostart/*.desktop`.
 
-### Phase 3 — Packaging
+### Phase 3 — Packaging — **partly done**
+
+> Releases are automatic: every merge to `main` publishes `X.Y.N` (see `scripts/release.sh` and
+> `.github/workflows/release.yml`) with a tarball, a `SHA256SUMS` and a build-provenance
+> attestation. The AppImage script is kept and works, but CI deliberately does not run it: it
+> downloads `linuxdeploy`/`appimagetool` from a moving `continuous` tag into a job that can write
+> to the repository, and that is a bigger risk than the convenience is worth. The `.desktop`,
+> icon and `StartupWMClass` are shipped in the tarball either way.
+
+### Phase 3 (original notes)
 
 **AppImage only. Flatpak is dropped deliberately** — the sandbox would fight both the host
 `protonvpn` CLI and tray-name ownership, for no benefit a wrapper needs.

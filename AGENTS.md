@@ -52,9 +52,22 @@ cargo clippy --all-targets -- -D warnings   # warnings are errors
 ./scripts/capture-fixtures.sh               # re-capture fixtures, disconnected set (safe)
 ./scripts/capture-fixtures.sh --connected   # also brings the VPN up and back down
 ./packaging/appimage/build.sh               # AppImage
+./scripts/release.sh --dry-run              # build and package a release without publishing
+./scripts/release.sh --print-version        # the tag the next merge would publish
 ```
 
-Both `cargo fmt --check` and `clippy -D warnings` must be clean before committing.
+Both `cargo fmt --check` and `clippy -D warnings` must be clean before committing — CI runs
+exactly these three gates, and `main` cannot move until they are green.
+
+## Branch policy
+
+`main` is protected, for the maintainer as much as for anyone else: no pushes, no force pushes, no
+deletions, and no merges without a green `test` check. Every change goes through a pull request. No
+review is required, but CI is.
+
+Releases are published by `.github/workflows/release.yml` on every merge to `main`
+(`scripts/release.sh`), version `X.Y.N`: `X.Y` is the latest release tag, `N` is the commit count.
+Nothing is bumped by hand.
 
 Running the GUI without a display, for a smoke test: `sway` with `WLR_BACKENDS=headless` plus
 `Xwayland`, then `ffmpeg -f x11grab` to photograph the window. The engine's tests never touch the
@@ -104,12 +117,13 @@ real CLI — they drive a stand-in script through `EngineOptions::program`.
 (`src/bin/capture_fixtures.rs`, `scripts/capture-fixtures.sh`); a frozen PTY fixture corpus with
 guarantee tests. Then Phase 1 and most of Phase 2: `runner.rs`, `logbus.rs`, `interpreter.rs`,
 `parse.rs`, `launcher.rs`, `poll.rs`, `probe.rs`, `net/natpmp.rs`, `qbittorrent.rs`, `config.rs`
-and `engine.rs`, plus the `iced` window, the console pane, the `ksni` tray and autostart.
+and `engine.rs`, plus the `iced` window, the console pane, the `ksni` tray and autostart. Then the
+project's own plumbing: protected `main`, CI on every pull request, and a release per merge.
 
 **Next:** a live `signin` / 2FA run (needs a human — it signs the account out first, so the
 prompt sequence is still uncaptured); a live port-forwarding check against a P2P server;
-packaging a release AppImage; desktop notifications, which need a human decision because they
-would be a fourth sanctioned exception.
+desktop notifications, which need a human decision because they would be a fourth sanctioned
+exception.
 
 **Verified live** (2026-09-30, two full rounds): the app connects on start to the configured
 country and the tray reports it, `protonvpn status` agrees, the egress address changes and comes

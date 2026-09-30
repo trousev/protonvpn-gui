@@ -8,6 +8,33 @@ else is a view onto it or a reducer over it.
 
 It is a wrapper and it does not pretend otherwise.
 
+## Download
+
+Every merge to `main` publishes a release, so the newest build is always on the
+[releases page](https://github.com/trousev/protonvpn-gui/releases/latest):
+
+```sh
+# the asset is attached to every release
+tar -xzf protonvpn-gui-<version>-x86_64-linux.tar.gz
+sudo install -m755 protonvpn-gui-<version>-x86_64-linux/protonvpn-gui /usr/local/bin/
+```
+
+The tarball contains the binary, the `.desktop` entry, the icon, the README and the LICENSE. The
+`protonvpn` CLI itself is **not** included — it is a system dependency (see Requirements).
+
+Downloads can be verified rather than trusted:
+
+```sh
+sha256sum -c SHA256SUMS
+gh attestation verify protonvpn-gui-<version>-x86_64-linux.tar.gz --repo trousev/protonvpn-gui
+```
+
+The attestation is signed proof that the artifact came out of this repository's release workflow,
+which is the answer to "could someone have swapped it?" — see [`SECURITY.md`](SECURITY.md).
+
+Versions are `X.Y.N`: `X.Y` is the latest release tag in the repository, `N` is the number of
+commits in `main`. Nothing is bumped by hand, and every merge gets a version.
+
 ## What it does
 
 - Connect / disconnect: fastest server, a country, a city, a specific server (`IT#23`), and the
@@ -61,6 +88,8 @@ cargo build --release -p protonvpn-gui
 ./target/release/protonvpn-gui
 ```
 
+The toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml); `rustup` will fetch it.
+
 `protonvpn-core` has no UI dependency and can be built and tested on its own:
 
 ```sh
@@ -87,11 +116,33 @@ probe, the port-forwarding lease, and the qBittorrent host/port/user). Two delib
 
 Autostart is a plain `~/.config/autostart/protonvpn-gui.desktop`, written only when you ask for it.
 
+## Contributing
+
+`main` is protected. Every change goes through a pull request and cannot be merged until CI is
+green — the same three gates you can run yourself:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+No review is required, and no direct pushes are possible, including for the maintainer: if CI is
+red, `main` cannot move. See [`SECURITY.md`](SECURITY.md) for the workflow hardening this repository
+applies, and `.github/dependabot.yml` for how the pinned dependencies get updated.
+
 ## Packaging
 
 AppImage only — Flatpak was dropped deliberately, because the sandbox would fight both the host
 `protonvpn` CLI and tray-name ownership for no benefit a wrapper needs. See
 [`packaging/appimage/build.sh`](packaging/appimage/build.sh).
+
+The release job ships a **tarball**, not an AppImage, and that is a deliberate trade: building an
+AppImage means downloading `linuxdeploy` and `appimagetool` — third-party binaries, historically
+referenced by a moving `continuous` tag — into a job that holds `contents: write`. For a project
+whose rule is "one program, and we know exactly which", a tarball built by `scripts/release.sh` from
+a pinned toolchain is the smaller risk. Run `packaging/appimage/build.sh` locally if you want the
+AppImage.
 
 ## Honest limitations
 
