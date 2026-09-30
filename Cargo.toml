@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/protonvpn-core"]
-default-members = ["crates/protonvpn-core"]
+members = ["crates/protonvpn-core", "crates/protonvpn-gui"]
+default-members = ["crates/protonvpn-core", "crates/protonvpn-gui"]
 
 [workspace.package]
 version = "0.1.0"
