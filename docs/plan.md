@@ -129,7 +129,14 @@ outlive the CLI process; only the Local Agent dies. Key numbers:
 Still open (non-blocking): connection-failure exit codes, the `signin`/2FA PTY prompt sequence,
 and the CLI's exact error when the official GTK app is running.
 
-### Phase 1 — Tray + window MVP, **including port forwarding** (1.5 weeks)
+### Phase 1 — Tray + window MVP, **including port forwarding** — **DONE**
+
+> Implemented in `crates/protonvpn-core` (`runner`, `logbus`, `interpreter`, `launcher`, `parse`,
+> `poll`, `probe`, `net/natpmp`, `qbittorrent`, `config`, `engine`) and `crates/protonvpn-gui`
+> (`iced` window, console pane, `ksni` tray, autostart). Deployment is automated up to a release
+> AppImage; a live connect/disconnect run still needs a human, because it changes this machine's
+> network. Framework confirmed by building it: `iced` + `ksni`, on `tiny-skia` so no GPU is
+> involved.
 
 Port forwarding is in v1 — it is the only genuinely useful feature the official CLI does *not*
 cover, and the NAT-PMP work turned out small.
@@ -167,7 +174,14 @@ no window; clicking the tray opens it; closing returns to the tray; every comman
 visible verbatim in the console with its real output; if the CLI errors, the raw error is
 readable and copyable.
 
-### Phase 2 — Actual usability (1–2 weeks)
+### Phase 2 — Actual usability (1–2 weeks) — **mostly done**
+
+> Country/city browser with search and feature tags, presets, server-ID entry, the settings screen
+> from `config list` / `config set` (values taken from the CLI's own `--help`), the PTY-backed
+> login form with masked fields, and the opt-in qBittorrent tab with its honest pseudo-invocation
+> are all in. Desktop notifications are **not**, and deliberately: they would be a fourth
+> sanctioned exception. Login has not been exercised against the real prompt sequence, because
+> that means signing out first.
 
 - Country/city browser from `countries list` / `cities list`, with feature tags, search, caching.
 - Presets: fastest / P2P / Secure Core / Tor / random; direct server ID entry.

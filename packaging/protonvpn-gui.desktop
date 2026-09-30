@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Proton VPN GUI
+GenericName=VPN client
+Comment=Console-first wrapper around the official protonvpn CLI
+Exec=protonvpn-gui
+Icon=protonvpn-gui
+Terminal=false
+Categories=Network;Security;
+Keywords=VPN;Proton;protonvpn;
+StartupNotify=false
+StartupWMClass=protonvpn-gui

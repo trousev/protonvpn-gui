@@ -39,7 +39,9 @@ add a fourth without a human decision.
 | `docs/research.md` | how the official Proton stack works. Background; not a design input |
 | `crates/protonvpn-core/` | all VPN logic. **No UI dependency** — the tray must work with no window |
 | `crates/protonvpn-core/tests/fixtures/pty/` | the frozen parser corpus (13 invocations + metadata) |
-| `crates/protonvpn-gui/` | UI only — **not created yet** |
+| `crates/protonvpn-gui/` | UI only: the window, the console pane, the tray, autostart |
+| `crates/protonvpn-core/src/engine.rs` | the one thread that owns state; the only writer of the log bus, the interpreter state and the lease |
+| `packaging/` | AppImage build script, `.desktop`, icon |
 
 ## Commands
 
@@ -49,9 +51,14 @@ cargo fmt --all                             # formatting is enforced
 cargo clippy --all-targets -- -D warnings   # warnings are errors
 ./scripts/capture-fixtures.sh               # re-capture fixtures, disconnected set (safe)
 ./scripts/capture-fixtures.sh --connected   # also brings the VPN up and back down
+./packaging/appimage/build.sh               # AppImage
 ```
 
 Both `cargo fmt --check` and `clippy -D warnings` must be clean before committing.
+
+Running the GUI without a display, for a smoke test: `sway` with `WLR_BACKENDS=headless` plus
+`Xwayland`, then `ffmpeg -f x11grab` to photograph the window. The engine's tests never touch the
+real CLI — they drive a stand-in script through `EngineOptions::program`.
 
 ## Conventions
 
@@ -86,15 +93,19 @@ Both `cargo fmt --check` and `clippy -D warnings` must be clean before committin
   not re-derive the old conclusions from the surrounding text.
 - **State must be shown with its age** (`updated 3 mins ago`), never as a bare verdict and never
   with the word "stale". See `docs/architecture.md` §7.
+- **winit cannot hide a window on Wayland** — `set_visible` is literally "Not possible on
+  Wayland". "Close to tray" is therefore destroy-and-recreate, and the app must be an
+  `iced::daemon`: an `iced::application` exits the moment its last window is destroyed, which
+  would make closing the window quit the app.
 
 ## Current state
 
 **Done:** research; architecture; workspace; the PTY driver (`src/pty.rs`); the capture harness
 (`src/bin/capture_fixtures.rs`, `scripts/capture-fixtures.sh`); a frozen PTY fixture corpus with
-guarantee tests.
+guarantee tests. Then Phase 1 and most of Phase 2: `runner.rs`, `logbus.rs`, `interpreter.rs`,
+`parse.rs`, `launcher.rs`, `poll.rs`, `probe.rs`, `net/natpmp.rs`, `qbittorrent.rs`, `config.rs`
+and `engine.rs`, plus the `iced` window, the console pane, the `ksni` tray and autostart.
 
-**Next — Phase 1:** `runner.rs` (serialized invocations, streamed lines, full invocation
-records), `logbus.rs` (one ordered stream, two consumers: console and interpreter),
-`interpreter.rs` (a pure reducer over the fixtures). Then the `iced` + `ksni` GUI — the framework
-choice is a default, not a settled decision, and is meant to be confirmed when the UI itself is
-discussed. Nothing in the core depends on it.
+**Next:** a live connect/disconnect run (needs a human — it changes this machine's network); the
+`signin` prompt sequence captured for real; packaging a release AppImage; desktop notifications,
+which need a human decision because they would be a fourth sanctioned exception.
