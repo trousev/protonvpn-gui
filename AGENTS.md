@@ -106,6 +106,12 @@ guarantee tests. Then Phase 1 and most of Phase 2: `runner.rs`, `logbus.rs`, `in
 `parse.rs`, `launcher.rs`, `poll.rs`, `probe.rs`, `net/natpmp.rs`, `qbittorrent.rs`, `config.rs`
 and `engine.rs`, plus the `iced` window, the console pane, the `ksni` tray and autostart.
 
-**Next:** a live connect/disconnect run (needs a human — it changes this machine's network); the
-`signin` prompt sequence captured for real; packaging a release AppImage; desktop notifications,
-which need a human decision because they would be a fourth sanctioned exception.
+**Next:** a live `signin` / 2FA run (needs a human — it signs the account out first, so the
+prompt sequence is still uncaptured); a live port-forwarding check against a P2P server;
+packaging a release AppImage; desktop notifications, which need a human decision because they
+would be a fourth sanctioned exception.
+
+**Verified live** (2026-09-30, two full rounds): the app connects on start to the configured
+country and the tray reports it, `protonvpn status` agrees, the egress address changes and comes
+back, disconnecting from the tray menu takes effect within seconds, quitting from the tray leaves
+no window and no bus name, and no NetworkManager profile or egress change is left behind.

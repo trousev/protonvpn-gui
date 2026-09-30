@@ -134,9 +134,9 @@ and the CLI's exact error when the official GTK app is running.
 > Implemented in `crates/protonvpn-core` (`runner`, `logbus`, `interpreter`, `launcher`, `parse`,
 > `poll`, `probe`, `net/natpmp`, `qbittorrent`, `config`, `engine`) and `crates/protonvpn-gui`
 > (`iced` window, console pane, `ksni` tray, autostart). Deployment is automated up to a release
-> AppImage; a live connect/disconnect run still needs a human, because it changes this machine's
-> network. Framework confirmed by building it: `iced` + `ksni`, on `tiny-skia` so no GPU is
-> involved.
+> AppImage. The live round-trip is **verified** (two rounds): start-to-connect, tray status,
+> `status` agreement, egress change and restore, disconnect and quit from the tray, no leftovers.
+> Framework confirmed by building it: `iced` + `ksni`, on `tiny-skia` so no GPU is involved.
 
 Port forwarding is in v1 — it is the only genuinely useful feature the official CLI does *not*
 cover, and the NAT-PMP work turned out small.
