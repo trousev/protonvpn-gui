@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # The pinned action SHAs go stale silently, which is the one real cost of pinning. Dependabot
+  # understands a `uses: owner/repo@sha # vX.Y.Z` pin and proposes the bump as a pull request that
+  # has to pass CI like anything else.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Cargo dependencies, grouped so a week of patch bumps is one reviewable pull request rather
+  # than twenty.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo:
+        patterns: ["*"]

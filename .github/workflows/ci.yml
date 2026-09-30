@@ -1,0 +1,56 @@
+name: ci
+
+# `pull_request` and not `pull_request_target`. The difference is the whole security model:
+# `pull_request_target` runs in the context of the base branch *with* a writable token and access
+# to secrets, so a fork could run arbitrary code against this repository. Plain `pull_request`
+# gives a fork's code a read-only token, no secrets, and no ability to push. Nothing here needs
+# more than that, and nothing here ever will — the tests do not talk to the network beyond crates.io
+# and the pinned toolchain.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Read-only unless a job says otherwise. A workflow that inherits the repository default can be
+# turned into a writer by a single careless step; this cannot.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The job name is the status check that branch protection requires. Renaming it silently
+  # unprotects `main`, so it is load-bearing: `test`.
+  test:
+    name: test
+    # Pinned rather than `ubuntu-latest`: a runner image change should be a decision, not a
+    # Tuesday.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        # Pinned by commit SHA, not by tag: a tag can be moved to point at other code, a commit
+        # cannot. Dependabot keeps the pin and the comment in step.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No token left behind in .git/config for a later step to find and reuse.
+          persist-credentials: false
+
+      - name: Toolchain
+        # The workflow installs the toolchain that `rust-toolchain.toml` pins, rather than
+        # whatever the image happens to ship. `rustup show` is what actually resolves the file.
+        run: |
+          rustup show
+          rustc --version
+          cargo --version
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --locked

@@ -1,0 +1,6 @@
+# The toolchain CI uses, pinned rather than `stable` so that a green build today means the same
+# thing tomorrow. `rust-version` in Cargo.toml stays the real MSRV; this is what we test with.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
