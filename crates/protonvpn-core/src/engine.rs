@@ -28,8 +28,8 @@ use crate::interpreter::{self, PromptKind};
 use crate::launcher::Intent;
 use crate::logbus::{InvocationKind, LogBus, LogEvent};
 use crate::model::{
-    AppState, ConnectionStatus, EgressReading, InvocationId, Observation, PortForwarding,
-    ProbeEndpoint, RunnerStatus,
+    AppState, ConnectTarget, ConnectionStatus, EgressReading, InvocationId, Observation,
+    PortForwarding, ProbeEndpoint, RunnerStatus,
 };
 use crate::net::natpmp::{self, NatPmp, Protocol};
 use crate::poll::PollSchedule;
@@ -93,6 +93,9 @@ pub enum Request {
     ReleasePort,
     /// The user is looking: refresh if the policy allows it.
     Attention,
+    /// Stop the running child. An interactive command waits for a human, and waiting must not be
+    /// the same thing as being stuck.
+    Cancel,
     /// Replace our own configuration.
     SaveConfig(Box<Config>),
     /// The qBittorrent password, which never reaches the config file.
@@ -262,6 +265,8 @@ pub fn spawn(options: EngineOptions) -> EngineHandle {
         probe_in_flight: false,
         lease: None,
         lease_attempted_for: None,
+        active_port_forwarding: None,
+        pending_connect: None,
         qbittorrent_password: String::new(),
         pushed_port: None,
         secrets: None,
@@ -328,6 +333,16 @@ struct Engine {
     lease: Option<ActiveLease>,
     /// Which server we last attempted a lease for, so a refusal is not retried forever.
     lease_attempted_for: Option<String>,
+    /// Whether the connection *we* established this session asked for a port-forwarding lease.
+    ///
+    /// `None` means we did not establish it — the tunnel was already up when the app started, so
+    /// the honest fallback is the selected profile (`docs/architecture.md` §11). A deliberate
+    /// `false` is not the same thing and must not be overridden by the selection.
+    active_port_forwarding: Option<bool>,
+    /// A connect waiting for `config set port-forwarding on` to finish. The CLI's preference is
+    /// global — it has no per-connection settings — so a profile that wants a lease sets it first
+    /// and the connect follows, both visible in the console.
+    pending_connect: Option<ConnectTarget>,
     /// qBittorrent's password, held in memory only — never written to the config file.
     qbittorrent_password: String,
     pushed_port: Option<u16>,
@@ -344,8 +359,13 @@ struct Engine {
 impl Engine {
     fn run(mut self, rx: Receiver<Request>) {
         // A status read right away: the app must not open claiming to know nothing when a
-        // one-second command can tell it the truth.
+        // one-second command can tell it the truth. It counts as the idle poll — without this the
+        // timer would immediately queue a second identical `status` behind it.
+        self.schedule.note_poll(Instant::now());
         self.submit(Intent::RefreshStatus);
+        // Who we are decides which shell the window shows — the login page or the app — so it is
+        // asked once at startup rather than the first time someone opens a tab.
+        self.submit(Intent::AccountInfo);
         if self.config.probe_enabled {
             self.choose_probe_async();
         }
@@ -449,6 +469,9 @@ impl Engine {
                 self.maybe_start_lease();
             }
             Request::ReleasePort => self.release_lease("по запросу пользователя"),
+            Request::Cancel => {
+                self.runner.cancel();
+            }
             Request::Attention => {
                 let now = Instant::now();
                 if self.runner.outstanding() == 0 && self.schedule.on_attention(now) {
@@ -505,6 +528,29 @@ impl Engine {
     }
 
     fn run_intent(&mut self, intent: Intent) {
+        if let Intent::Connect(target) = &intent
+            && target.port_forwarding
+            && !self.setting_is_on("port-forwarding")
+        {
+            // The gateway only offers a mapping to a connection whose CLI preference is on. The
+            // preference is global, so the profile sets it — in the open, as its own invocation —
+            // and the connect waits behind it. Nothing is claimed until `config list` says so.
+            self.pending_connect = Some(target.clone());
+            self.submit(Intent::SetSetting {
+                key: "port-forwarding".to_string(),
+                value: "on".to_string(),
+                dns: None,
+            });
+            return;
+        }
+        self.establish(intent);
+    }
+
+    /// The part of [`Self::run_intent`] that actually moves the tunnel.
+    fn establish(&mut self, intent: Intent) {
+        if let Intent::Connect(target) = &intent {
+            self.active_port_forwarding = Some(target.port_forwarding);
+        }
         if intent.changes_connection_state() {
             // A fresh baseline before we move the tunnel: "did the egress change?" is only
             // answerable if we know what it was.
@@ -520,6 +566,25 @@ impl Engine {
             self.publish_state();
         }
         self.submit(intent);
+    }
+
+    /// Is a `config list` value known to be `on`? Unknown is not `on`: for a commitment we make
+    /// on the user's behalf, the safe reading is "make sure".
+    fn setting_is_on(&self, key: &str) -> bool {
+        self.state
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.value.iter().find(|setting| setting.key == key))
+            .is_some_and(|setting| setting.value == "on")
+    }
+
+    /// Whether the tunnel currently up should have a lease, per `active_port_forwarding`.
+    fn wants_port_forwarding(&self) -> bool {
+        self.active_port_forwarding.unwrap_or_else(|| {
+            self.config
+                .selected()
+                .is_some_and(|saved| saved.port_forwarding)
+        })
     }
 
     /// Queues a command. The launcher decides argv; the runner decides when it runs.
@@ -774,9 +839,19 @@ impl Engine {
                 }
             }
             // Only `config list` is evidence that a setting took effect, so a successful `set`
-            // is followed by a fresh list.
-            "config" if second == "set" && exit_code == Some(0) => {
-                self.submit(Intent::ListSettings);
+            // is followed by a fresh list. A connect queued behind the set goes after that list,
+            // so the console reads in the order a careful human would do it.
+            "config" if second == "set" => {
+                if exit_code == Some(0) {
+                    self.submit(Intent::ListSettings);
+                    if let Some(target) = self.pending_connect.take() {
+                        self.establish(Intent::Connect(target));
+                    }
+                } else {
+                    // The preference could not be set, so the connect it was preparing for must
+                    // not run: a profile that asked for a lease would silently not get one.
+                    self.pending_connect = None;
+                }
             }
             _ => {}
         }
@@ -985,7 +1060,7 @@ impl Engine {
     // --- port forwarding (exception #2) ----------------------------------------------------
 
     fn maybe_start_lease(&mut self) {
-        if !self.config.port_forwarding_enabled {
+        if !self.wants_port_forwarding() {
             return;
         }
         if !self.state.connection.value.is_connected() {
@@ -1231,6 +1306,19 @@ case "$1" in
     rm -f "$0.connected"
     ;;
   info) echo "Account: 'trousev'" ;;
+  signin)
+    # Exactly the shape of the real CLI: the prompt has no trailing newline, and the password is
+    # read without echoing it (measured 2026-10-01).
+    stty -echo 2>/dev/null
+    printf 'Password: '
+    read -r pw
+    stty echo 2>/dev/null
+    if [ "$pw" = "correct-horse" ]; then
+      echo "Signed in."
+    else
+      echo "Error: Authentication failed."
+    fi
+    ;;
   *) echo "Current configuration" ;;
 esac
 "#;
@@ -1270,9 +1358,9 @@ esac
         let program = write_stand_in(dir.path());
         let config = Config {
             // No `curl` and no NAT-PMP in tests: both are separate, offline-tested modules, and a
-            // test must never ask a real gateway for a real port.
+            // test must never ask a real gateway for a real port. No saved profile asks for a
+            // lease either, so the lease path is never entered here.
             probe_enabled: false,
-            port_forwarding_enabled: false,
             ..Default::default()
         };
         let options = EngineOptions {
@@ -1326,7 +1414,10 @@ esac
         // The invocation is in the console, verbatim, with its exit code.
         let bus = handle.bus();
         let bus = bus.lock().unwrap();
-        let invocation = bus.last().expect("one invocation was recorded");
+        let invocation = bus
+            .iter()
+            .find(|invocation| invocation.command_line().ends_with("status"))
+            .expect("the status invocation was recorded");
         assert_eq!(
             invocation.argv,
             vec![
@@ -1336,6 +1427,134 @@ esac
         );
         assert_eq!(invocation.exit_code, Some(0));
         assert_eq!(invocation.output().trim_end(), "Status: Disconnected");
+
+        // Who we are is asked at the same time: the login page is a decision, not a tab.
+        assert!(
+            bus.iter()
+                .any(|invocation| invocation.command_line().ends_with("info")),
+            "{:?}",
+            bus.iter()
+                .map(|invocation| invocation.command_line())
+                .collect::<Vec<_>>()
+        );
+
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    /// The console order is the contract here: a profile that wants a lease must not connect
+    /// before the CLI's single global preference says it may, and the user must be able to read
+    /// that going on (`docs/architecture.md` §11).
+    #[test]
+    fn a_connect_that_wants_a_port_sets_the_preference_first() {
+        let dir = TempDir::new("port-forwarding-order");
+        let handle = start(&dir);
+        wait_for(&handle, "the initial status", |shared| {
+            shared.state.connection.value == ConnectionStatus::Disconnected
+        });
+
+        handle.send(Request::Run(Intent::Connect(ConnectTarget {
+            country: Some("NL".into()),
+            port_forwarding: true,
+            ..Default::default()
+        })));
+        wait_for(&handle, "a connection", |shared| {
+            shared.state.connection.value.is_connected()
+        });
+
+        let bus = handle.bus();
+        let bus = bus.lock().unwrap();
+        let commands: Vec<String> = bus
+            .iter()
+            .filter(|invocation| invocation.kind.is_protonvpn())
+            .map(|invocation| invocation.command_line())
+            .collect();
+        let set = commands
+            .iter()
+            .position(|line| line.ends_with("config set port-forwarding on"));
+        let connect = commands
+            .iter()
+            .position(|line| line.ends_with("connect --country NL"));
+        assert!(set.is_some(), "{commands:?}");
+        assert!(connect.is_some(), "{commands:?}");
+        assert!(
+            set < connect,
+            "the preference is set, and listed, before the connect: {commands:?}"
+        );
+        drop(bus);
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    /// The wrapper only spends a second on `config set` when a profile actually asked for a lease.
+    #[test]
+    fn a_connect_that_does_not_want_a_port_sets_nothing() {
+        let dir = TempDir::new("no-port-forwarding");
+        let handle = start(&dir);
+        wait_for(&handle, "the initial status", |shared| {
+            shared.state.connection.value == ConnectionStatus::Disconnected
+        });
+
+        handle.send(Request::Run(Intent::Connect(ConnectTarget::country("NL"))));
+        wait_for(&handle, "a connection", |shared| {
+            shared.state.connection.value.is_connected()
+        });
+
+        let bus = handle.bus();
+        let bus = bus.lock().unwrap();
+        let commands: Vec<String> = bus
+            .iter()
+            .map(|invocation| invocation.command_line())
+            .collect();
+        assert!(
+            !commands.iter().any(|line| line.contains("config set")),
+            "{commands:?}"
+        );
+        drop(bus);
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    /// The bug this pins, measured against the real CLI: `protonvpn signin` prints `Password: `
+    /// with **no trailing newline** and then blocks. A reader that only forwards complete lines
+    /// forwards nothing, the engine never sees the prompt, the password is never written, and the
+    /// window sits at "работаю" forever. The user cannot get in and cannot get out.
+    #[test]
+    fn a_login_prompt_without_a_newline_is_seen_answered_and_kept_out_of_the_console() {
+        let dir = TempDir::new("signin-prompt");
+        let handle = start(&dir);
+        wait_for(&handle, "the initial status", |shared| {
+            shared.state.connection.value == ConnectionStatus::Disconnected
+        });
+
+        handle.send(Request::SignIn {
+            username: "trousev".into(),
+            password: "correct-horse".into(),
+            two_factor: None,
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut transcript = String::new();
+        while Instant::now() < deadline {
+            transcript = handle.bus().lock().unwrap().transcript();
+            if transcript.contains("Signed in.") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert!(
+            transcript.contains("Password: "),
+            "the prompt reached the console: {transcript}"
+        );
+        assert!(
+            transcript.contains("Signed in."),
+            "the password reached the child: {transcript}"
+        );
+        // The property the whole sign-in path exists to preserve.
+        assert!(
+            !transcript.contains("correct-horse"),
+            "the secret never reaches the console: {transcript}"
+        );
+        // And nothing is left waiting for an answer that is not coming.
+        assert!(handle.snapshot().pending_prompt.is_none());
 
         assert!(handle.shutdown(Duration::from_secs(5)));
     }
@@ -1469,7 +1688,6 @@ esac
         let dir = TempDir::new("missing-cli");
         let config = Config {
             probe_enabled: false,
-            port_forwarding_enabled: false,
             ..Default::default()
         };
         let options = EngineOptions {

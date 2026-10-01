@@ -100,11 +100,6 @@ impl ConsoleModel {
     pub fn is_empty(&self) -> bool {
         self.blocks.is_empty()
     }
-
-    /// The last invocation, for the collapsed bar's footer.
-    pub fn last(&self) -> Option<&Block> {
-        self.blocks.last()
-    }
 }
 
 fn bus_version(bus: &LogBus) -> u64 {
@@ -213,7 +208,7 @@ mod tests {
         assert_eq!(model.blocks.len(), MAX_INVOCATIONS);
         // Oldest first, newest last: the console reads top to bottom like a terminal.
         assert_eq!(model.blocks.first().unwrap().command, "protonvpn cmd20");
-        assert_eq!(model.last().unwrap().command, "protonvpn cmd59");
+        assert_eq!(model.blocks.last().unwrap().command, "protonvpn cmd59");
     }
 
     #[test]
@@ -284,7 +279,10 @@ mod tests {
         bus.push_line(id, "Status: Disconnected", SystemTime::now());
         model.refresh(&bus);
         assert_ne!(model.version, version);
-        assert_eq!(model.last().unwrap().output, "Status: Disconnected\n");
+        assert_eq!(
+            model.blocks.last().unwrap().output,
+            "Status: Disconnected\n"
+        );
     }
 
     #[test]

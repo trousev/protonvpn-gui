@@ -51,7 +51,15 @@ There is no `--background`, no `--daemon`, no `--json`. Verified via `--help` on
 ```
 Account: 'trousev'
 ```
-Logged-out variant not yet observed. Include in Phase 0 checks.
+**Logged-out variant — observed 2026-10-01 on 1.0.3:**
+```
+Account: 'None'
+```
+The field is never omitted and never empty: the CLI prints the Python sentinel, quoted exactly
+like a real name. This is a parsing trap, not a nicety — read at face value it is an account
+called "None", and the GUI believed it was signed in, hid the login page, and left the user with
+no way to authenticate and every `connect` failing. The sentinel is therefore mapped to *no name*
+in `parse::account`, and `Account: ''` / `Account:` mean the same thing.
 
 ### `protonvpn status` — the state source
 ```
@@ -119,6 +127,31 @@ Username is an argument; the password is prompted for through a callable
 (`controller.login(username, get_password, get_2fa)`). So stdin alone is likely not enough —
 a **PTY** is required to answer the password (and 2FA) prompts.
 Wrapper options: `portable-pty` or `pty-process` in Rust.
+
+**Measured 2026-10-01**, driven through a PTY with a throwaway username (no password sent):
+
+```
+Password:          <- written with no trailing newline, then the CLI blocks
+```
+
+Two properties of that prompt, both of which broke this wrapper before they were written down:
+
+- **The prompt is not a line.** There is no `\n`, so a reader that only forwards complete lines
+  forwards nothing at all: the engine never sees the prompt, never writes the password, and the
+  window sits at "работаю" forever — the user can neither get in nor get out. Anything the child
+  leaves unterminated for ~200 ms is treated as a prompt (`runner::PROMPT_IDLE`).
+- **The CLI turns echo off itself.** Writing a known string and reading the master for five
+  seconds produces no echo of it, so the password does not reach the transcript. That is the CLI
+  holding up its end; our end is never writing the secret anywhere but the PTY.
+
+The failure path is a plain error line and a clean exit:
+
+```
+Error: Authentication failed. Please check your username and password and try again.
+```
+
+The **2FA prompt text is still uncaptured**: it needs real credentials, and the account this was
+measured against does not have 2FA enabled.
 
 ### `protonvpn signout`
 Logs out and clears local credentials.
@@ -271,7 +304,8 @@ pvpn-killswitch-ipv6  dummy      ipv6leakintrf0   activated
 ### 4.6 Still to capture
 
 1. Connection-failure exit codes (requires a server that fails — hard to trigger on demand).
-2. `signin` / `2FA` prompt sequence for the PTY driver.
+2. The `signin` **2FA** prompt (the password prompt and the logged-out `info` output were
+   captured on 2026-10-01 — see §1 — and are no longer outstanding).
 3. The exact CLI error when the official GTK app is running (needs the GTK app installed —
    it is not).
 4. A **conclusive** NetShield test — see §4.7; the one attempted was inconclusive.

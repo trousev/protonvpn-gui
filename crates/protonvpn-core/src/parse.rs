@@ -241,12 +241,31 @@ pub fn settings(text: &str) -> Option<Vec<Setting>> {
 }
 
 /// `protonvpn info`.
+///
+/// **Measured 2026-10-01, logged out on 1.0.3:** the CLI does not omit the field or leave it
+/// empty — it prints the Python sentinel, quoted exactly like a real name:
+///
+/// ```text
+/// Account: 'None'
+/// ```
+///
+/// Taken at face value that is an account called "None": the window believes it is signed in,
+/// hides the login page, and every command then fails with no way for the user to sign in. So the
+/// sentinel is recognised here and becomes an [`Account`] with no name — which is exactly the
+/// "we asked, and it named nobody" state the login gate reads.
 pub fn account(text: &str) -> Option<Account> {
+    /// Spellings of "nobody" the CLI has been seen to use, compared case-insensitively.
+    const NOBODY: [&str; 2] = ["none", "null"];
+
     for line in meaningful_lines(text) {
         if let Some(rest) = line.strip_prefix("Account:") {
             let name = rest.trim().trim_matches('\'').trim();
+            let named = !name.is_empty()
+                && !NOBODY
+                    .iter()
+                    .any(|sentinel| name.eq_ignore_ascii_case(sentinel));
             return Some(Account {
-                name: (!name.is_empty()).then(|| name.to_string()),
+                name: named.then(|| name.to_string()),
             });
         }
     }
@@ -479,6 +498,26 @@ mod tests {
                 name: Some("trousev".into())
             })
         );
+    }
+
+    #[test]
+    fn the_logged_out_sentinel_is_not_an_account_named_none() {
+        // Observed live, 2026-10-01, on 1.0.3: `protonvpn info` while logged out prints the
+        // Python sentinel, quoted like a name. Reading it as a name locks the user out of the
+        // window entirely.
+        for text in [
+            "Account: 'None'",
+            "Account: 'none'",
+            "Account: 'null'",
+            "Account: ''",
+            "Account:",
+        ] {
+            assert_eq!(
+                account(text),
+                Some(Account { name: None }),
+                "{text:?} names nobody"
+            );
+        }
     }
 
     #[test]

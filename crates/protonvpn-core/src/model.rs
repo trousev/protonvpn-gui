@@ -339,6 +339,13 @@ pub struct ConnectTarget {
     pub secure_core: bool,
     pub tor: bool,
     pub random: bool,
+    /// Whether we commit to holding a NAT-PMP lease for the connection this target establishes.
+    ///
+    /// **This is not a CLI flag** and must never appear in argv: the CLI cannot forward a port
+    /// (`docs/architecture.md` §10.1). `protonvpn config set port-forwarding on` only tells the
+    /// server to offer a mapping at connect time; the lease itself is exception #2, and it
+    /// belongs to the profile being connected, not to the app (`docs/architecture.md` §11).
+    pub port_forwarding: bool,
 }
 
 impl ConnectTarget {

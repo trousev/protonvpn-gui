@@ -197,6 +197,17 @@ readable and copyable.
   (Background portal, `--own-name`, `--system-talk-name`) is needed. Autostart is a plain
   `~/.config/autostart/*.desktop`.
 
+### Phase 2.5 — Connection manager and the redesigned window — **done**
+
+> [`architecture.md`](architecture.md) §11. Country, city, P2P, Secure Core, Tor and port
+> forwarding became properties of a **saved connection** instead of app-wide defaults; the three
+> system presets (`Fastest`, `Secure Core`, `P2P`) stay uneditable and unstored. The window is a
+> light two-page shell (Обзор / Настройки) with the console pinned underneath, the login page is a
+> page rather than a tab, and the settings screen keeps only CLI-reachable keys — a key the CLI
+> grows is still shown, one we invent is not. Port forwarding moved with it: the lease is held for
+> the *selected profile*, and a profile that wants one sets the CLI's single global preference
+> before connecting, in the open.
+
 ### Phase 3 — Packaging — **partly done**
 
 > Releases are automatic: every merge to `main` publishes `X.Y.N` (see `scripts/release.sh` and
