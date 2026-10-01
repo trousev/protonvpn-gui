@@ -59,12 +59,24 @@ fn on_started(state: &mut AppState, argv: &[String], at: SystemTime) {
     }
 }
 
+/// Does this invocation get to speak for the connection?
+///
+/// `Error:` is not only a connection word. Measured on this machine while logged out:
+/// `protonvpn countries list` fails with an error line, and letting that paint the tunnel red
+/// makes the window lie about the one thing it exists to report. The error is still recorded and
+/// still shown verbatim in the console; it just does not get to rewrite the connection.
+fn speaks_for_the_connection(argv: &[String]) -> bool {
+    matches!(subcommand(argv), Some("connect" | "disconnect" | "status"))
+}
+
 /// Mid-command signals. Deliberately narrow: only lines the CLI says about *itself*.
 fn on_line(state: &mut AppState, argv: &[String], id: InvocationId, text: &str, at: SystemTime) {
     if let Some(error) = parse::error(text, id) {
         // A coexistence failure is fatal to every subsequent command, and must be explained
         // rather than merely logged (`docs/cli-surface.md` §2).
-        state.connection = Observation::at(ConnectionStatus::Error(error.message.clone()), at);
+        if speaks_for_the_connection(argv) {
+            state.connection = Observation::at(ConnectionStatus::Error(error.message.clone()), at);
+        }
         state.last_error = Some(Observation::at(error, at));
         return;
     }
@@ -102,7 +114,9 @@ fn on_finished(
     state.last_run = Some(Observation::at(record.command_line(), at));
 
     if let Some(error) = parse::error(&text, id) {
-        state.connection = Observation::at(ConnectionStatus::Error(error.message.clone()), at);
+        if speaks_for_the_connection(&argv) {
+            state.connection = Observation::at(ConnectionStatus::Error(error.message.clone()), at);
+        }
         state.last_error = Some(Observation::at(error, at));
         return;
     }
@@ -580,6 +594,51 @@ mod tests {
         let before = AppState::default();
         let after = interpret(before.clone(), &event, bus.get(id));
         assert_eq!(before, after);
+    }
+
+    /// A failing list command is not news about the tunnel.
+    #[test]
+    fn an_error_from_a_non_connection_command_leaves_the_connection_alone() {
+        let base = run(
+            AppState::default(),
+            &["protonvpn", "status"],
+            "Status: Disconnected",
+            Some(0),
+        );
+        assert_eq!(
+            base.connection.value,
+            ConnectionStatus::Disconnected,
+            "the starting point"
+        );
+
+        let after = run(
+            base,
+            &["protonvpn", "countries", "list"],
+            "Error: You are not logged in.",
+            Some(2),
+        );
+        assert_eq!(
+            after.connection.value,
+            ConnectionStatus::Disconnected,
+            "a failed country list is not a failed tunnel"
+        );
+        assert!(
+            after.last_error.is_some(),
+            "but it is still recorded, and still in the console"
+        );
+
+        // A failing connect, on the other hand, is exactly that.
+        let failed = run(
+            after,
+            &["protonvpn", "connect", "--country", "NL"],
+            "Error: Invalid country code 'NL'.",
+            Some(2),
+        );
+        assert!(
+            matches!(failed.connection.value, ConnectionStatus::Error(_)),
+            "{:?}",
+            failed.connection.value
+        );
     }
 
     #[test]

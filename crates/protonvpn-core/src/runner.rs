@@ -36,6 +36,21 @@ pub const PTY_ROWS: u16 = 40;
 /// normal use; it exists so that a wedged child cannot leave the app saying "работаю" forever.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How long the child must be silent before an unterminated line is handed over as it stands.
+///
+/// **Measured 2026-10-01:** `protonvpn signin` writes `Password: ` — no trailing newline — and
+/// then blocks. A reader that only forwards complete lines forwards nothing at all, so the engine
+/// never sees the prompt, never writes the password, and the login sits at "работаю" forever.
+/// Anything the CLI leaves unterminated for this long is a prompt, not half of a line that is
+/// still being written.
+const PROMPT_IDLE: Duration = Duration::from_millis(200);
+
+/// The live tail of the child's output: text written, not yet terminated by a newline.
+struct Tail {
+    text: String,
+    quiet_since: Instant,
+}
+
 /// One queued invocation.
 #[derive(Debug, Clone)]
 pub struct Job {
@@ -107,6 +122,9 @@ pub struct Runner {
     /// Submitted but not yet finished, the running one included.
     outstanding: Arc<AtomicUsize>,
     running: Arc<AtomicBool>,
+    /// Set by the UI when the user gives up on the running child. An interactive command waits for
+    /// a human, and waiting must not be the same thing as being stuck.
+    cancel: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -117,14 +135,18 @@ impl Runner {
         let stdin_slot: Arc<Mutex<Option<PtyStdin>>> = Arc::new(Mutex::new(None));
         let outstanding = Arc::new(AtomicUsize::new(0));
         let running = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(AtomicBool::new(false));
 
         let handle = {
             let stdin_slot = Arc::clone(&stdin_slot);
             let outstanding = Arc::clone(&outstanding);
             let running = Arc::clone(&running);
+            let cancel = Arc::clone(&cancel);
             thread::Builder::new()
                 .name("protonvpn-runner".into())
-                .spawn(move || runner_loop(job_rx, events, stdin_slot, outstanding, running))
+                .spawn(move || {
+                    runner_loop(job_rx, events, stdin_slot, outstanding, running, cancel)
+                })
                 .expect("cannot spawn the runner thread")
         };
 
@@ -133,6 +155,7 @@ impl Runner {
             stdin_slot,
             outstanding,
             running,
+            cancel,
             thread: Some(handle),
         }
     }
@@ -171,6 +194,12 @@ impl Runner {
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
+
+    /// Asks the running child to stop. The runner kills it and records what happened; nothing is
+    /// assumed about why.
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Drop for Runner {
@@ -189,6 +218,7 @@ fn runner_loop(
     stdin_slot: Arc<Mutex<Option<PtyStdin>>>,
     outstanding: Arc<AtomicUsize>,
     running: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
 ) {
     let mut waiting = VecDeque::new();
     loop {
@@ -210,7 +240,10 @@ fn runner_loop(
         };
 
         running.store(true, Ordering::SeqCst);
-        run_one(&job, &events, &stdin_slot);
+        run_one(&job, &events, &stdin_slot, &cancel);
+        // A cancel is aimed at the child that was running when it was asked for, never at the
+        // next one.
+        cancel.store(false, Ordering::SeqCst);
         running.store(false, Ordering::SeqCst);
         outstanding.fetch_sub(1, Ordering::SeqCst);
     }
@@ -221,7 +254,12 @@ fn since(at: SystemTime) -> Duration {
     SystemTime::now().duration_since(at).unwrap_or_default()
 }
 
-fn run_one(job: &Job, events: &Sender<RunnerEvent>, stdin_slot: &Arc<Mutex<Option<PtyStdin>>>) {
+fn run_one(
+    job: &Job,
+    events: &Sender<RunnerEvent>,
+    stdin_slot: &Arc<Mutex<Option<PtyStdin>>>,
+    cancel: &Arc<AtomicBool>,
+) {
     let at = SystemTime::now();
     if events
         .send(RunnerEvent::Started { id: job.id, at })
@@ -261,73 +299,126 @@ fn run_one(job: &Job, events: &Sender<RunnerEvent>, stdin_slot: &Arc<Mutex<Optio
 
     let mut reader = spawned.take_reader();
     let (line_tx, line_rx) = channel::<String>();
-    let reader_thread = thread::Builder::new()
-        .name("protonvpn-pty-reader".into())
-        .spawn(move || {
-            let mut buffer = [0u8; 8192];
-            let mut pending = String::new();
-            loop {
-                match reader.read(&mut buffer) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        pending.push_str(&String::from_utf8_lossy(&buffer[..n]));
-                        for line in pty::split_lines(&mut pending) {
-                            if line_tx.send(line).is_err() {
-                                return;
+    // The reader hands over complete lines; whatever it is holding back lives here, where the
+    // consumer below can reach it when the child stops talking mid-line.
+    let tail = Arc::new(Mutex::new(Tail {
+        text: String::new(),
+        quiet_since: Instant::now(),
+    }));
+    let reader_thread = {
+        let tail = Arc::clone(&tail);
+        thread::Builder::new()
+            .name("protonvpn-pty-reader".into())
+            .spawn(move || {
+                let mut buffer = [0u8; 8192];
+                loop {
+                    match reader.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let lines = {
+                                let mut tail =
+                                    tail.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                                tail.text.push_str(&String::from_utf8_lossy(&buffer[..n]));
+                                // Stamped under the same lock the flusher reads it with, so a
+                                // freshly written tail can never look quiet.
+                                tail.quiet_since = Instant::now();
+                                pty::split_lines(&mut tail.text)
+                            };
+                            for line in lines {
+                                if line_tx.send(line).is_err() {
+                                    return;
+                                }
                             }
                         }
                     }
                 }
-            }
-            // A final line without a trailing newline is still a line.
-            if !pending.is_empty() {
-                let _ = line_tx.send(pending);
-            }
-        })
-        .expect("cannot spawn the pty reader thread");
+                // A final line without a trailing newline is still a line.
+                let last = {
+                    let mut tail = tail.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    std::mem::take(&mut tail.text)
+                };
+                if !last.is_empty() {
+                    let _ = line_tx.send(last);
+                }
+            })
+            .expect("cannot spawn the pty reader thread")
+    };
 
     let deadline = job.timeout.map(|timeout| Instant::now() + timeout);
     let mut timed_out = false;
+    let mut cancelled = false;
     loop {
+        // Every wait is bounded by the prompt idle window: that is how a line the child never
+        // terminated gets noticed while the child is still waiting for an answer.
         let wait = match deadline {
-            Some(deadline) => deadline.saturating_duration_since(Instant::now()),
-            // Effectively "until the reader is done"; interactive children have no deadline.
-            None => Duration::from_secs(86_400),
+            Some(deadline) => deadline
+                .saturating_duration_since(Instant::now())
+                .min(PROMPT_IDLE),
+            // Interactive children have no deadline: they are waiting for a human.
+            None => PROMPT_IDLE,
         };
-        match line_rx.recv_timeout(wait) {
-            Ok(text) => {
-                if events
-                    .send(RunnerEvent::Line {
-                        id: job.id,
-                        text,
-                        at: SystemTime::now(),
-                    })
-                    .is_err()
-                {
+        let line = match line_rx.recv_timeout(wait) {
+            Ok(text) => Some(text),
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                if cancel.load(Ordering::SeqCst) {
+                    cancelled = true;
+                    let _ = spawned.kill();
                     break;
                 }
-            }
-            Err(RecvTimeoutError::Timeout) => {
                 if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     timed_out = true;
                     let _ = spawned.kill();
                     break;
                 }
+                // The child has gone quiet. If it left something unterminated, that is a prompt.
+                let mut tail = tail.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if tail.text.is_empty() || tail.quiet_since.elapsed() < PROMPT_IDLE {
+                    None
+                } else {
+                    tail.quiet_since = Instant::now();
+                    Some(std::mem::take(&mut tail.text))
+                }
             }
-            Err(RecvTimeoutError::Disconnected) => break,
+        };
+
+        if let Some(text) = line
+            && events
+                .send(RunnerEvent::Line {
+                    id: job.id,
+                    text,
+                    at: SystemTime::now(),
+                })
+                .is_err()
+        {
+            break;
         }
     }
 
     let exit_code = spawned.wait().ok();
     let _ = reader_thread.join();
-    if timed_out {
-        let seconds = job.timeout.unwrap_or_default().as_secs();
-        let _ = events.send(RunnerEvent::Line {
-            id: job.id,
-            text: format!(
+
+    // Whether the child exited, was killed or was talked over, its terminal is done with.
+    if job.interactive {
+        stdin.close();
+        *stdin_slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    if cancelled || timed_out {
+        let text = if cancelled {
+            "[protonvpn-gui] выполнение прервано по запросу пользователя".to_string()
+        } else {
+            let seconds = job.timeout.unwrap_or_default().as_secs();
+            format!(
                 "[protonvpn-gui] команда не завершилась за {seconds} с и была прервана; \
                  вывод выше — всё, что успел сказать CLI"
-            ),
+            )
+        };
+        let _ = events.send(RunnerEvent::Line {
+            id: job.id,
+            text,
             at: SystemTime::now(),
         });
         let _ = events.send(RunnerEvent::Finished {
@@ -337,13 +428,6 @@ fn run_one(job: &Job, events: &Sender<RunnerEvent>, stdin_slot: &Arc<Mutex<Optio
             at: SystemTime::now(),
         });
         return;
-    }
-
-    if job.interactive {
-        stdin.close();
-        *stdin_slot
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
     let _ = events.send(RunnerEvent::Finished {
@@ -431,6 +515,35 @@ mod tests {
         ));
         let events = collect_until_finished(&rx, Duration::from_secs(10));
         assert_eq!(lines(&events), vec!["no newline".to_string()]);
+    }
+
+    /// An interactive child waits for a human, and waiting must not be the same thing as being
+    /// stuck: the window has to be able to say "no".
+    #[test]
+    fn a_child_waiting_on_input_can_be_cancelled() {
+        let (tx, rx) = channel();
+        let runner = Runner::spawn(tx);
+        runner.submit(
+            Job::command(
+                sh("printf 'Password: '; read -r pw; printf 'never\n'"),
+                PathBuf::from("/tmp"),
+            )
+            .interactive(),
+        );
+
+        // Let the prompt arrive, then give up on it the way a person would.
+        thread::sleep(Duration::from_millis(400));
+        runner.cancel();
+
+        let events = collect_until_finished(&rx, Duration::from_secs(10));
+        let lines = lines(&events);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("прервано по запросу")),
+            "{lines:?}"
+        );
+        assert!(!lines.iter().any(|line| line == "never"), "{lines:?}");
     }
 
     #[test]

@@ -278,6 +278,26 @@ mod tests {
     }
 
     #[test]
+    fn port_forwarding_is_ours_and_never_reaches_argv() {
+        // The CLI has no `--port-forwarding` flag: it only has a global preference, and the lease
+        // is exception #2 in `docs/architecture.md` §0. A target that asks for a lease must
+        // produce exactly the argv of a target that does not.
+        let plain = ConnectTarget::country("NL");
+        let forwarding = ConnectTarget {
+            port_forwarding: true,
+            ..plain.clone()
+        };
+        assert_eq!(
+            argv(Intent::Connect(plain)),
+            vec!["protonvpn", "connect", "--country", "NL"]
+        );
+        assert_eq!(
+            argv(Intent::Connect(forwarding)),
+            vec!["protonvpn", "connect", "--country", "NL"]
+        );
+    }
+
+    #[test]
     fn every_argv_starts_with_the_one_program_we_run() {
         let intents = [
             Intent::Connect(ConnectTarget::fastest()),

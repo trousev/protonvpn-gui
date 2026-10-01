@@ -82,6 +82,13 @@ Responsibilities:
   timestamps, exit code, and every line of stdout and stderr — merged into one ordered stream.
 - **Stream**, do not buffer. Lines reach the log bus as they are produced, so the console is live
   and the interpreter can react mid-command.
+- **Hand over an unterminated line once the child goes quiet.** `signin` writes `Password: ` with
+  no newline and then blocks; a strict line reader sits on it forever and the login hangs with no
+  way in and no way out. A tail that has been silent for ~200 ms is a prompt, not half a line.
+  Measured — see [`cli-surface.md`](cli-surface.md) §1.
+- **A running command can be interrupted.** An interactive child has no deadline by design (it is
+  waiting for a human), so the console offers «Прервать»: waiting must not be the same thing as
+  being stuck.
 - Expose runner status for the collapsed console:
 
 ```
@@ -354,8 +361,9 @@ Two things, deliberately separated:
 **Always:** the forwarded port is displayed prominently with a copy button. It must be pasted
 into whatever P2P client the user runs, so copyability is a core requirement, not a nicety.
 
-**Opt-in, off by default:** a **separate tab** holds an optional checkbox for pushing the port
-into qBittorrent via its Web API. Disabled unless the user explicitly turns it on — enabling it
+Whether a lease is held at all is a property of the connection being connected (§11), not of the
+application. **Opt-in, off by default:** a **separate tab** holds an optional checkbox for pushing
+the port into qBittorrent via its Web API. Disabled unless the user explicitly turns it on — enabling it
 is a deliberate act, because it changes another application's configuration.
 
 Tab contents:
@@ -378,3 +386,54 @@ Design notes:
   keyring entries, not the system keyring as such.
 - This is exception #3 in §0, and it stayed the smallest of the three: it runs nothing, it talks
   to localhost, and it is off until asked for.
+
+---
+
+## 11. Connections — where a preset lives
+
+A **connection** is a saved spelling of `protonvpn connect`. Everything the CLI lets one connect
+decide — `--country`, `--city`, `--p2p`, `--securecore`, `--tor` — belongs to the profile, not to
+the application. There is deliberately **no global "default preset" setting** left: the CLI has
+connect flags, not defaults, and a "default P2P" switch would have been a global that no command
+ever reads.
+
+Two kinds, one selection:
+
+| Kind | Stored? | Editable? | Target |
+|---|---|---|---|
+| `Fastest`, `Secure Core`, `P2P` | no | no | the CLI's own shortcuts (`connect`, `--securecore`, `--p2p`) |
+| user profiles | `Config::connections` | yes | country + city + the three flags + port forwarding |
+
+`Config::selected_connection` holds one id for both kinds (`system:*` or a profile's id). Profile
+ids are opaque and stable, so renaming `Работа` does not move the selection; the id is generated
+from the name and can never collide with the `system:` namespace.
+
+Rules the code enforces:
+
+1. **The preview is the launcher's.** The editor's argv line is produced by `Intent::Connect(…)`,
+   the same function the runner gets, so the sentence the user reads cannot drift from the command
+   that runs.
+2. **Nothing the CLI does not report.** `countries list` prints a name and a code — no server
+   counts, no load, no latency. The picker shows a name and a code; the city list shows the
+   features column, which is real. A mock-up's "210 серверов" is not data we have.
+3. **Port forwarding is part of the profile.** It stays exception #2 and it stays ours, but the
+   *decision* to hold a lease travels with the connection being connected
+   (`ConnectTarget::port_forwarding`), never with the application. `protonvpn` has no
+   per-connection settings, so a profile that asks for a lease sets the one global preference
+   first — `protonvpn config set port-forwarding on` — waits for it, and only then connects. Both
+   invocations are in the console, in the order a careful human would run them, and a failed set
+   cancels the connect rather than silently holding nothing.
+4. **The app never invents a connection.** A selection that no longer resolves (a profile deleted
+   by hand, an edited config) falls back to `connect`, and the status line says which connection
+   that was.
+
+The window itself is two pages and a console. **Overview** is status, the ground-truth probe and
+the connection list; **Settings** is `config list` grouped into tabs, plus the handful of settings
+that are ours (autostart, start hidden, connect at startup, the probe). A key the CLI grows that
+we have never seen is still shown, under its own name, in «Общие» — hiding it would be a lie of
+omission. Signed out, the whole window is the login page: there is nothing else that can honestly
+be done until `protonvpn info` names an account.
+
+The console stays pinned under both pages, collapsed to one line: runner status, connection
+status, and the age of that knowledge (§7). It is still the product.
+

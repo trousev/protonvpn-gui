@@ -139,12 +139,16 @@ be checked by a real run.
 guarantee tests. Then Phase 1 and most of Phase 2: `runner.rs`, `logbus.rs`, `interpreter.rs`,
 `parse.rs`, `launcher.rs`, `poll.rs`, `probe.rs`, `net/natpmp.rs`, `qbittorrent.rs`, `config.rs`
 and `engine.rs`, plus the `iced` window, the console pane, the `ksni` tray and autostart. Then the
-project's own plumbing: protected `main`, CI on every pull request, and a release per merge.
+project's own plumbing: protected `main`, CI on every pull request, and a release per merge. Then
+the connection manager and the redesigned window ([`docs/architecture.md`](docs/architecture.md)
+§11): country, city, P2P, Secure Core, Tor and port forwarding are properties of a **saved
+connection**, the shell is a light two-page window (Обзор / Настройки) with the console pinned
+underneath, and the login form is a page rather than a tab. `design/after/` holds screenshots of
+the result.
 
-**Next:** a live `signin` / 2FA run (needs a human — it signs the account out first, so the
-prompt sequence is still uncaptured); a live port-forwarding check against a P2P server;
-desktop notifications, which need a human decision because they would be a fourth sanctioned
-exception.
+**Next:** a live `signin` run with real credentials (needs a human — the password prompt is
+captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; desktop
+notifications, which need a human decision because they would be a fourth sanctioned exception.
 
 **Verified live** (2026-09-30, two full rounds): the app connects on start to the configured
 country and the tray reports it, `protonvpn status` agrees, the egress address changes and comes

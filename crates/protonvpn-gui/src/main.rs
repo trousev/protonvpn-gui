@@ -8,7 +8,9 @@
 mod app;
 mod autostart;
 mod console;
+mod theme;
 mod tray;
+mod widgets;
 
 fn main() -> iced::Result {
     app::run()
