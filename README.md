@@ -119,10 +119,11 @@ Autostart is a plain `~/.config/autostart/protonvpn-gui.desktop`, written only w
 ## Contributing
 
 `main` is protected. Every change goes through a pull request and cannot be merged until CI is
-green — the same three gates you can run yourself:
+green — the same four gates you can run yourself:
 
 ```sh
 cargo fmt --all --check
+./scripts/check-linux-deps.sh
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
@@ -164,6 +165,14 @@ AppImage.
   and not an `iced::application`: an application exits when its last window is destroyed.
 - **Desktop notifications are not implemented.** They would need either another program or the
   session bus beyond the tray, and neither is sanctioned yet. A human decision, not an oversight.
+- **The window costs about two hundred crates, and that is where they all are.** The wrapper
+  itself — `protonvpn-core`: PTY runner, interpreter, launcher, poller, probe, NAT-PMP, qBittorrent
+  — is 26. The rest is `iced`, and under it `winit`, `softbuffer` and the tray's `zbus`. `Cargo.lock`
+  also lists Android, Windows and macOS crates, because that is what `winit` declares and a lock
+  file is a union over every target; none of them is compiled here. This is a Linux-only tool, and
+  `scripts/check-linux-deps.sh` fails the build if one of them would be, or if the graph grows past
+  the number recorded in the script — adding a dependency should be an edit someone reviewed, not a
+  side effect.
 
 ## Layout
 

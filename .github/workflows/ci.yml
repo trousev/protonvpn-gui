@@ -49,6 +49,11 @@ jobs:
       - name: Formatting
         run: cargo fmt --all --check
 
+      # Before the build steps: this is pure graph inspection, so a dependency that is not Linux
+      # or a graph that grew fails in seconds instead of after a full compile.
+      - name: Dependencies
+        run: ./scripts/check-linux-deps.sh
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 

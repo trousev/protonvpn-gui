@@ -15,5 +15,6 @@ path = "src/main.rs"
 protonvpn-core = { path = "../protonvpn-core" }
 iced.workspace = true
 ksni.workspace = true
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# No `serde` here on purpose: config is read and written by `protonvpn-core`, and the UI only ever
+# holds the deserialised types. A direct dependency would be one more thing to keep in step for
+# nothing.

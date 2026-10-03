@@ -49,6 +49,7 @@ add a fourth without a human decision.
 cargo test                                  # unit tests + fixture-corpus guarantees
 cargo fmt --all                             # formatting is enforced
 cargo clippy --all-targets -- -D warnings   # warnings are errors
+./scripts/check-linux-deps.sh               # Linux-only graph, and a ratcheted crate count
 ./scripts/capture-fixtures.sh               # re-capture fixtures, disconnected set (safe)
 ./scripts/capture-fixtures.sh --connected   # also brings the VPN up and back down
 ./packaging/appimage/build.sh               # AppImage
@@ -56,8 +57,17 @@ cargo clippy --all-targets -- -D warnings   # warnings are errors
 ./scripts/release.sh --print-version        # the tag the next merge would publish
 ```
 
-Both `cargo fmt --check` and `clippy -D warnings` must be clean before committing — CI runs
-exactly these three gates, and `main` cannot move until they are green.
+CI runs exactly these four gates — fmt, dependencies, clippy, tests — and `main` cannot move until
+they are green.
+
+The dependency gate exists because the graph is the one thing that grows without anyone deciding
+to grow it. This application is Linux only: it is not built, tested or shipped for Android, Windows
+or macOS, and `scripts/check-linux-deps.sh` fails if a build would compile a crate belonging to one
+of them. `Cargo.lock` will still *list* such crates, because it is a union over every target and a
+dependency cannot be told to drop its `[target.'cfg(windows)'.dependencies]` table; that is not the
+thing worth policing. The count is ratcheted at the value in the script, so adding a dependency
+means editing a number and saying why in the commit message — the same way the dependency count
+reached two hundred unnoticed otherwise.
 
 ## Branch policy
 
@@ -144,7 +154,10 @@ the connection manager and the redesigned window ([`docs/architecture.md`](docs/
 §11): country, city, P2P, Secure Core, Tor and port forwarding are properties of a **saved
 connection**, the shell is a light two-page window (Обзор / Настройки) with the console pinned
 underneath, and the login form is a page rather than a tab. `design/after/` holds screenshots of
-the result.
+the result. Then a dependency audit: iced's unused `auto-detect-theme` — and behind it
+`dark-light`, a second `zbus` stack, `dconf` and a desktop-sniffing crate — is gone, taking the
+Linux closure from 241 crates to 218 and `Cargo.lock` from 384 entries to 321, and
+[`scripts/check-linux-deps.sh`](scripts/check-linux-deps.sh) now holds the line.
 
 **Next:** a live `signin` run with real credentials (needs a human — the password prompt is
 captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; desktop
