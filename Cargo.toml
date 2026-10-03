@@ -14,10 +14,14 @@ repository = "https://github.com/trousev/protonvpn-gui"
 portable-pty = "0.9"
 # `tiny-skia` and not `wgpu`: a tray companion does not need a GPU, and the software renderer
 # works over plain Wayland/X11 without a driver conversation.
+#
+# `auto-detect-theme` is deliberately absent. The palette is built in `gui/src/theme.rs` and handed
+# to iced explicitly, so the feature only adds `dark-light` — and behind it a second `zbus` stack,
+# `dconf`, `detect-desktop-environment` and the macOS/Windows/Web branches of each — to guess a
+# preference nothing here reads. Measured: 23 crates in the Linux closure.
 iced = { version = "0.13", default-features = false, features = [
     "tiny-skia",
     "fira-sans",
-    "auto-detect-theme",
     "advanced",
     # The window's repaint beat needs an executor; without one iced falls back to a null backend
     # and `time::every` does not exist at all (`tiny-skia` alone renders, it does not schedule).
