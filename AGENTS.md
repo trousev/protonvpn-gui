@@ -157,7 +157,10 @@ underneath, and the login form is a page rather than a tab. `design/after/` hold
 the result. Then a dependency audit: iced's unused `auto-detect-theme` — and behind it
 `dark-light`, a second `zbus` stack, `dconf` and a desktop-sniffing crate — is gone, taking the
 Linux closure from 241 crates to 218 and `Cargo.lock` from 384 entries to 321, and
-[`scripts/check-linux-deps.sh`](scripts/check-linux-deps.sh) now holds the line.
+[`scripts/check-linux-deps.sh`](scripts/check-linux-deps.sh) now holds the line. Then the release
+pipeline: every merge publishes an AppImage alongside the tarball, assembled in a read-only job
+from a toolchain pinned by version and SHA-256, so the third-party `linuxdeploy`/`appimagetool`
+never runs in the job that can write.
 
 **Next:** a live `signin` run with real credentials (needs a human — the password prompt is
 captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; desktop

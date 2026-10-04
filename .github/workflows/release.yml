@@ -18,15 +18,67 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The AppImage is assembled here, in a job that can only read. `packaging/appimage/build.sh`
+  # downloads and executes a third-party AppImage toolchain; running that inside the job that
+  # holds `contents: write` is exactly the risk the split exists to remove. The tools are pinned
+  # by SHA-256 in the script, the result is uploaded as an artifact, and `release` hands it to
+  # `scripts/release.sh` without ever running the toolchain itself.
+  #
+  # The runner is the same `ubuntu-24.04` as CI, so the AppImage inherits its glibc floor (2.39)
+  # just as the tarball does. Widening that is a deliberate change to make later: move this job
+  # (not the publish job) to the oldest runner we intend to support and rebuild.
+  appimage:
+    name: appimage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No token left behind in .git/config for a later step to find and reuse.
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          rustup show
+          rustc --version
+          cargo --version
+
+      - name: Build the AppImage
+        run: packaging/appimage/build.sh
+
+      - name: Stage the binary and the AppImage
+        # The binary is uploaded along with the AppImage so the publish job does not compile the
+        # workspace a second time just to fill the tarball.
+        run: |
+          mkdir -p dist-artifacts
+          install -m 755 target/release/protonvpn-gui dist-artifacts/protonvpn-gui
+          install -m 755 target/appimage/ProtonVPN-GUI-*.AppImage dist-artifacts/
+          ls -la dist-artifacts
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: appimage
+          path: dist-artifacts/*
+          if-no-files-found: error
+          # A build input, not a release artifact: it only has to survive until `release` runs.
+          retention-days: 7
+
   release:
     name: release
+    needs: appimage
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       # The only job in the repository that may write. Creating a tag and a release needs this;
       # publishing a build does not need anything else.
       contents: write
-      # For the build-provenance attestation below.
+      # Reading back the artifact that `appimage` uploaded for this run.
+      actions: read
+      # For the build-provenance attestations below.
       id-token: write
       attestations: write
     steps:
@@ -53,17 +105,32 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked
 
+      - name: Download the AppImage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: appimage
+          path: dist-artifacts
+
       - name: Build, package and publish
         # Version, packaging and publishing live in one script so that they can be run — and were
-        # run — locally and under `act` before ever reaching this runner. With no `GH_TOKEN` the
-        # script stops after packaging, which is what makes that possible.
+        # run — locally and under `act` before ever reaching this runner. The AppImage is an
+        # input here: it was built in the read-only job above. With no `GH_TOKEN` the script stops
+        # after packaging, which is what makes that possible.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/release.sh
+        run: |
+          mkdir -p target/release
+          install -m 755 dist-artifacts/protonvpn-gui target/release/protonvpn-gui
+          scripts/release.sh --skip-build --appimage dist-artifacts/ProtonVPN-GUI-*.AppImage
 
-      - name: Provenance
+      - name: Provenance for the tarball
         # Signed proof that these bytes came out of this workflow in this repository, so a
         # downloaded artifact can be verified rather than trusted. First-party, pinned by SHA.
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*.tar.gz
+
+      - name: Provenance for the AppImage
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.AppImage

@@ -22,3 +22,6 @@ target
 
 # AppImage build scratch space
 tools/
+
+# Release staging (scripts/release.sh)
+dist/
