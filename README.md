@@ -10,7 +10,7 @@ It is a wrapper and it does not pretend otherwise.
 
 ## Download
 
-Every merge to `main` publishes a release, so the newest build is always on the
+Releases are published on demand, not on every merge, and the newest one is always on the
 [releases page](https://github.com/trousev/protonvpn-gui/releases/latest). Two assets are attached
 to each release:
 
@@ -42,7 +42,8 @@ The attestation is signed proof that the artifact came out of this repository's 
 which is the answer to "could someone have swapped it?" — see [`SECURITY.md`](SECURITY.md).
 
 Versions are `X.Y.N`: `X.Y` is the latest release tag in the repository, `N` is the number of
-commits in `main`. Nothing is bumped by hand, and every merge gets a version.
+commits in `main`. Nothing is bumped by hand — the number is simply where `main` stood when the
+release was asked for.
 
 ## What it does
 
@@ -155,6 +156,11 @@ toolchain never runs in the job that holds `contents: write`.
 
 The tarball is still attached as the plain fallback, and `packaging/appimage/build.sh` is the whole
 AppImage path on its own.
+
+Releases are on demand: `./scripts/release.sh` dispatches the release workflow with `gh`, and the
+workflow is the only thing that publishes. Nothing goes out because a pull request was merged —
+code landing and a build being handed to the world are two decisions, and only the second one needs
+someone to mean it.
 
 ## Honest limitations
 

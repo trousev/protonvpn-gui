@@ -53,8 +53,10 @@ cargo clippy --all-targets -- -D warnings   # warnings are errors
 ./scripts/capture-fixtures.sh               # re-capture fixtures, disconnected set (safe)
 ./scripts/capture-fixtures.sh --connected   # also brings the VPN up and back down
 ./packaging/appimage/build.sh               # AppImage
-./scripts/release.sh --dry-run              # build and package a release without publishing
-./scripts/release.sh --print-version        # the tag the next merge would publish
+./scripts/release.sh                        # dispatch the release workflow (logged-in `gh` only)
+./scripts/release.sh --dry-run              # print the dispatch that would be sent, and stop
+./scripts/release.sh --print-version        # the tag a release from this checkout would publish
+./scripts/release.sh --local --dry-run      # build and package a release without publishing
 ```
 
 CI runs exactly these four gates — fmt, dependencies, clippy, tests — and `main` cannot move until
@@ -75,9 +77,11 @@ reached two hundred unnoticed otherwise.
 deletions, and no merges without a green `test` check. Every change goes through a pull request. No
 review is required, but CI is.
 
-Releases are published by `.github/workflows/release.yml` on every merge to `main`
-(`scripts/release.sh`), version `X.Y.N`: `X.Y` is the latest release tag, `N` is the commit count.
-Nothing is bumped by hand.
+A release is asked for, not a consequence of `main` moving: `.github/workflows/release.yml` has no
+`push` trigger, and `./scripts/release.sh` dispatches it with `gh workflow run --ref main` using the
+`gh` login already on the machine. The workflow then publishes version `X.Y.N`: `X.Y` is the latest
+release tag, `N` is the commit count of `main`. Nothing is bumped by hand, and a release that waits
+for three merges simply skips the numbers in between.
 
 Running the GUI without a display, for a smoke test: `sway` with `WLR_BACKENDS=headless` plus
 `Xwayland`, then `ffmpeg -f x11grab` to photograph the window. The engine's tests never touch the
@@ -96,13 +100,14 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 ENV PATH=/root/.cargo/bin:$PATH
 EOF
 
-act pull_request -W .github/workflows/ci.yml -P ubuntu-24.04=pvpn-act:24.04 --pull=false
-act push         -W .github/workflows/release.yml -P ubuntu-24.04=pvpn-act:24.04 --pull=false -s GITHUB_TOKEN=
+act pull_request      -W .github/workflows/ci.yml -P ubuntu-24.04=pvpn-act:24.04 --pull=false
+act workflow_dispatch -W .github/workflows/release.yml -P ubuntu-24.04=pvpn-act:24.04 --pull=false -s GITHUB_TOKEN=
 ```
 
-With an empty `GITHUB_TOKEN` the release script stops after packaging, so `act` exercises
-everything except the upload. The provenance attestation needs GitHub's OIDC endpoint and can only
-be checked by a real run.
+With an empty `GITHUB_TOKEN` the release script stops after packaging (the publish job calls it
+with `--skip-build`, which is its local mode — `gh workflow run` is never reached there), so `act`
+exercises everything except the upload. The provenance attestation needs GitHub's OIDC endpoint and
+can only be checked by a real run.
 
 ## Conventions
 
@@ -149,7 +154,7 @@ be checked by a real run.
 guarantee tests. Then Phase 1 and most of Phase 2: `runner.rs`, `logbus.rs`, `interpreter.rs`,
 `parse.rs`, `launcher.rs`, `poll.rs`, `probe.rs`, `net/natpmp.rs`, `qbittorrent.rs`, `config.rs`
 and `engine.rs`, plus the `iced` window, the console pane, the `ksni` tray and autostart. Then the
-project's own plumbing: protected `main`, CI on every pull request, and a release per merge. Then
+project's own plumbing: protected `main`, CI on every pull request, and a release pipeline. Then
 the connection manager and the redesigned window ([`docs/architecture.md`](docs/architecture.md)
 §11): country, city, P2P, Secure Core, Tor and port forwarding are properties of a **saved
 connection**, the shell is a light two-page window (Обзор / Настройки) with the console pinned
@@ -158,9 +163,11 @@ the result. Then a dependency audit: iced's unused `auto-detect-theme` — and b
 `dark-light`, a second `zbus` stack, `dconf` and a desktop-sniffing crate — is gone, taking the
 Linux closure from 241 crates to 218 and `Cargo.lock` from 384 entries to 321, and
 [`scripts/check-linux-deps.sh`](scripts/check-linux-deps.sh) now holds the line. Then the release
-pipeline: every merge publishes an AppImage alongside the tarball, assembled in a read-only job
+pipeline: a release publishes an AppImage alongside the tarball, assembled in a read-only job
 from a toolchain pinned by version and SHA-256, so the third-party `linuxdeploy`/`appimagetool`
-never runs in the job that can write.
+never runs in the job that can write. Then the trigger itself: the workflow is dispatch-only, and
+`./scripts/release.sh` asks for a release with `gh`, so a merge and a release stopped being the
+same decision.
 
 **Next:** a live `signin` run with real credentials (needs a human — the password prompt is
 captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; desktop

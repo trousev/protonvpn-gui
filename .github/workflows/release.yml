@@ -1,17 +1,22 @@
 name: release
 
-# Every merge to `main` publishes a release. `main` is protected (pull request + green CI), so
-# this runs only on commits that were reviewed and tested.
+# A release happens when someone asks for one, not when `main` moves. There is deliberately no
+# `push` trigger: merging reviewed code and publishing a build to the world are two decisions, and
+# making the second one follow automatically from the first publishes a lot of releases nobody
+# looked at. `scripts/release.sh` asks, with `gh workflow run release.yml --ref main`; the "Run
+# workflow" button in the Actions tab does the same thing.
+#
+# `main` is still the only thing released, and still only after CI: `scripts/release.sh` names the
+# ref (`--ref main`), so the branch it happens to be run from is not what gets released, and the
+# gate below repeats CI's checks on the commit it is about to publish.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 # Nothing is writable by default, including in the checkout.
 permissions:
   contents: read
 
-# Releases are serialised and never cancelled: two merges in a row must not race for the same
+# Releases are serialised and never cancelled: two dispatches in a row must not race for the same
 # version number, and a half-published release is worse than a late one.
 concurrency:
   group: release-main

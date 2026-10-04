@@ -210,9 +210,10 @@ readable and copyable.
 
 ### Phase 3 — Packaging — **done**
 
-> Releases are automatic: every merge to `main` publishes `X.Y.N` (see `scripts/release.sh` and
-> `.github/workflows/release.yml`) with an AppImage, a tarball, a `SHA256SUMS` and a
-> build-provenance attestation for each. The AppImage is assembled in a job that can only **read**
+> Releases are on demand: `./scripts/release.sh` dispatches `.github/workflows/release.yml` with
+> `gh workflow run --ref main`, and a release publishes `X.Y.N` with an AppImage, a tarball, a
+> `SHA256SUMS` and a build-provenance attestation for each. There is no `push` trigger, so a merge
+> to `main` publishes nothing by itself. The AppImage is assembled in a job that can only **read**
 > — `packaging/appimage/build.sh` pins `linuxdeploy`, the output plugin that carries
 > `appimagetool`, and the AppImage runtime by version, and verifies each by SHA-256 before running
 > it — and the publish job only attaches the artifact it is handed. No third-party toolchain ever

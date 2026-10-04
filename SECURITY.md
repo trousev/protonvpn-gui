@@ -47,8 +47,9 @@ Open source, so the interesting attacker is not the user but a pull request.
 - **No dependency or build cache in CI.** A cache is writable by a pull request and readable by
   later builds; the minutes saved are not worth that class of risk.
 - **Releases are built only from `main`**, only after the same formatting, clippy and test gate
-  that protected the merge, and the artifact gets a **build provenance attestation** so a download
-  can be verified rather than trusted:
+  that protected the merge, and only when a maintainer asks for one — the release workflow has no
+  `push` trigger, so no merge publishes by itself. The artifact gets a **build provenance
+  attestation** so a download can be verified rather than trusted:
 
   ```sh
   sha256sum -c SHA256SUMS
