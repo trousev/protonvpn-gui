@@ -7,7 +7,8 @@ default-members = ["crates/protonvpn-core", "crates/protonvpn-gui"]
 version = "0.1.0"
 edition = "2024"
 license = "BSD-2-Clause"
-rust-version = "1.85"
+# iced 0.14 needs 1.88; the toolchain that actually builds this is pinned in rust-toolchain.toml.
+rust-version = "1.88"
 repository = "https://github.com/trousev/protonvpn-gui"
 
 [workspace.dependencies]
@@ -15,17 +16,25 @@ portable-pty = "0.9"
 # `tiny-skia` and not `wgpu`: a tray companion does not need a GPU, and the software renderer
 # works over plain Wayland/X11 without a driver conversation.
 #
-# `auto-detect-theme` is deliberately absent. The palette is built in `gui/src/theme.rs` and handed
-# to iced explicitly, so the feature only adds `dark-light` — and behind it a second `zbus` stack,
-# `dconf`, `detect-desktop-environment` and the macOS/Windows/Web branches of each — to guess a
-# preference nothing here reads. Measured: 23 crates in the Linux closure.
-iced = { version = "0.13", default-features = false, features = [
+# 0.14 and not 0.13, because 0.13 leaves a ghost window behind on Wayland: `iced_winit` used to
+# create a throwaway window with winit's default title ("winit window") just to bring the
+# compositor up, and the `tiny-skia` compositor keeps that window alive inside a
+# `softbuffer::Context` for the life of the process. Wayland cannot hide a window, so mutter
+# counted it: a second entry in Alt+Tab and a second dot in the dock, for a window nobody can see.
+# iced 0.14 initializes the compositor lazily on the first real window instead (iced-rs/iced#2722),
+# and there is nothing to hide. See `docs/architecture.md` §12.1.
+#
+# `x11` and `wayland` are named explicitly because `default-features = false` turns them off, and
+# `linux-theme-detection` stays off with them: the palette is built in `gui/src/theme.rs` and handed
+# to iced explicitly, so a desktop-sniffing crate would only guess at a preference nothing reads.
+iced = { version = "0.14", default-features = false, features = [
     "tiny-skia",
     "fira-sans",
-    "advanced",
     # The window's repaint beat needs an executor; without one iced falls back to a null backend
     # and `time::every` does not exist at all (`tiny-skia` alone renders, it does not schedule).
     "tokio",
+    "x11",
+    "wayland",
 ] }
 # The `blocking` API puts the StatusNotifierItem on its own thread; `async-io` avoids pulling in a
 # whole async runtime for it. zbus (not libdbus) means no C dependency.

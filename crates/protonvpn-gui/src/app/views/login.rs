@@ -50,7 +50,10 @@ fn login_card(app: &App, two_factor: bool) -> Element<'_, Message> {
             .on_press(Message::SignInCancelled)
             .into()
     } else {
-        iced::widget::Space::new(Length::Fixed(1.0), Length::Fixed(1.0)).into()
+        iced::widget::Space::new()
+            .width(Length::Fixed(1.0))
+            .height(Length::Fixed(1.0))
+            .into()
     };
 
     let logo = container(
@@ -170,7 +173,9 @@ fn login_card(app: &App, two_factor: bool) -> Element<'_, Message> {
     column![
         row![
             logo,
-            iced::widget::Space::new(Length::Fill, Length::Fixed(1.0)),
+            iced::widget::Space::new()
+                .width(Length::Fill)
+                .height(Length::Fixed(1.0)),
             back,
         ]
         .align_y(Alignment::Center),

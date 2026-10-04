@@ -39,7 +39,7 @@ add a fourth without a human decision.
 | `docs/research.md` | how the official Proton stack works. Background; not a design input |
 | `crates/protonvpn-core/` | all VPN logic. **No UI dependency** — the tray must work with no window |
 | `crates/protonvpn-core/tests/fixtures/pty/` | the frozen parser corpus (13 invocations + metadata) |
-| `crates/protonvpn-gui/` | UI only: the window, the console pane, the tray, autostart |
+| `crates/protonvpn-gui/` | UI only: the window, the console pane, the tray, the `.desktop` entries |
 | `crates/protonvpn-core/src/engine.rs` | the one thread that owns state; the only writer of the log bus, the interpreter state and the lease |
 | `packaging/` | AppImage build script, `.desktop`, icon |
 
@@ -146,6 +146,15 @@ can only be checked by a real run.
   Wayland". "Close to tray" is therefore destroy-and-recreate, and the app must be an
   `iced::daemon`: an `iced::application` exits the moment its last window is destroyed, which
   would make closing the window quit the app.
+- **iced 0.13 leaves a ghost window on Wayland; 0.14 does not.** 0.13's `iced_winit` created a
+  throwaway "winit window" to boot the compositor, and `tiny-skia`'s `softbuffer::Context` kept it
+  alive — visible in Alt+Tab and counted by the dock, invisible on screen. iced 0.14 boots the
+  compositor lazily on the first real window (iced-rs/iced#2722). Do not pin back to 0.13; §12.1
+  of `docs/architecture.md` has the measurement.
+- **Wayland has no window icons.** The window's name and icon come from a `.desktop` file whose
+  basename matches the window's app id, which is why the app installs one into
+  `~/.local/share/{applications,icons/hicolor}` and why `desktop::entry()` and
+  `packaging/protonvpn-gui.desktop` are kept identical by a test (`docs/architecture.md` §12).
 
 ## Current state
 
@@ -167,7 +176,11 @@ pipeline: a release publishes an AppImage alongside the tarball, assembled in a 
 from a toolchain pinned by version and SHA-256, so the third-party `linuxdeploy`/`appimagetool`
 never runs in the job that can write. Then the trigger itself: the workflow is dispatch-only, and
 `./scripts/release.sh` asks for a release with `gh`, so a merge and a release stopped being the
-same decision.
+same decision. Then two fixes that came out of running the app on GNOME: iced went from 0.13 to
+0.14, which removes the ghost "winit window" from Alt+Tab and takes the Linux closure from 218
+crates to 195, and the app now installs its own `.desktop` entry and icon into `~/.local/share`,
+which is the only way a Wayland desktop can give the window a name and an icon at all
+(`docs/architecture.md` §12).
 
 **Next:** a live `signin` run with real credentials (needs a human — the password prompt is
 captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; desktop

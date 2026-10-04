@@ -132,7 +132,7 @@ fn cli_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
 
     let head = row![
         widgets::eyebrow("protonvpn config list"),
-        Space::new(Length::Fill, Length::Fixed(1.0)),
+        Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
         widgets::faint(observation.age_text()),
     ]
     .align_y(Alignment::Center);
@@ -291,16 +291,29 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
                     AppToggle::Autostart,
                 ),
                 widget_toggle(
+                    app.config.desktop_entry,
+                    "Ярлык в меню приложений",
+                    "Установить .desktop и иконку в ~/.local/share. Это не украшение: на Wayland \
+                     иконки у окна нет, и рабочий стол узнаёт имя и иконку только из .desktop — \
+                     без него GNOME показывает окно как «Неизвестное приложение».",
+                    AppToggle::DesktopEntry,
+                ),
+                widget_toggle(
                     app.config.start_minimized,
                     "Запускать свёрнутым в трей",
                     "Старт без окна: приложение сразу живёт в трее.",
                     AppToggle::StartMinimized,
                 ),
                 widgets::faint(format!(
-                    "Файл автозапуска: {} · настройки приложения хранятся в \
+                    "Автозапуск: {} · ярлык: {} · настройки приложения хранятся в \
                      ~/.config/protonvpn-gui/config.json. Файлы официального приложения мы не \
                      читаем и не пишем.",
-                    if crate::autostart::is_enabled() {
+                    if app.desktop.autostart_enabled() {
+                        "есть"
+                    } else {
+                        "нет"
+                    },
+                    if app.desktop.entry_installed() {
                         "есть"
                     } else {
                         "нет"
@@ -334,12 +347,10 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
                     "Необязательная передача проброшенного порта в локальный qBittorrent. \
                      Выключено по умолчанию: включение меняет настройки другой программы."
                 ),
-                checkbox(
-                    "Передавать порт в qBittorrent (localhost, Web API)",
-                    app.config.qbittorrent.enabled,
-                )
-                .text_size(13)
-                .on_toggle(Message::QbEnabled),
+                checkbox(app.config.qbittorrent.enabled)
+                    .label("Передавать порт в qBittorrent (localhost, Web API)")
+                    .text_size(13)
+                    .on_toggle(Message::QbEnabled),
                 row![
                     widgets::faint("Хост"),
                     text_input("localhost", &app.qb_host)
@@ -441,7 +452,7 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
                             widgets::muted(
                                 "Аккаунт не подтверждён: `protonvpn info` не назвал имя."
                             ),
-                            Space::new(Length::Fill, Length::Fixed(1.0)),
+                            Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
                             button(text("Войти").size(13))
                                 .padding(Padding::from([7, 14]))
                                 .style(theme::filled(theme::ACCENT))

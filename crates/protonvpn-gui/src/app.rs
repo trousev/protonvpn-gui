@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use iced::widget::scrollable;
+use iced::widget::{operation, scrollable};
 use iced::{Element, Subscription, Task};
 use iced::{clipboard, exit, time, window};
 
@@ -32,8 +32,8 @@ use protonvpn_core::engine::{EngineHandle, EngineOptions, Request, Shared, TrayV
 use protonvpn_core::launcher::Intent;
 use protonvpn_core::model::{ConnectTarget, InvocationId};
 
-use crate::autostart;
 use crate::console::ConsoleModel;
+use crate::desktop::{self, Desktop};
 use crate::theme;
 use crate::tray::{self, TrayCommand};
 
@@ -44,6 +44,24 @@ const TICK: Duration = Duration::from_millis(200);
 const CONSOLE_ID: &str = "console-transcript";
 
 pub fn run() -> iced::Result {
+    // A **daemon**, not an application, and this is the whole reason: `iced::application` exits
+    // when its last window is destroyed, and winit cannot hide a window on Wayland at all
+    // ("Not possible on Wayland" in `set_visible`). Closing the window therefore has to mean
+    // *destroying* it, and the app has to keep running afterwards — which is what a daemon does.
+    iced::daemon(boot, App::update, App::view)
+        .title("Proton VPN")
+        .subscription(App::subscription)
+        .theme(|_state: &App, _window: window::Id| theme::app())
+        .run()
+}
+
+/// Everything the application comes up with: the config, the entries we keep in step with it, the
+/// tray, the engine, and the first window (unless this run is meant to live in the tray).
+///
+/// iced 0.14 asks for a `Fn` here — the shell may, in principle, boot the program more than once —
+/// so nothing is captured from [`run`]. A second call would build a second, self-contained
+/// application rather than borrow the first one's engine.
+fn boot() -> (App, Task<Message>) {
     let store = ConfigStore::default();
     let (config, config_error) = match store.load() {
         Ok(config) => (config, None),
@@ -53,9 +71,19 @@ pub fn run() -> iced::Result {
     // Keep the autostart entry in step with the config on every start: a user who deletes the
     // file should not be surprised by it coming back unasked, and one who enables it in the app
     // should not have to enable it twice.
-    let autostart_note = match autostart::sync(config.autostart, &autostart::current_exec()) {
+    let desktop = Desktop::default();
+    let exec = desktop::current_exec();
+    let autostart_note = match desktop.sync_autostart(config.autostart, &exec) {
         Ok(_) => None,
         Err(error) => Some(format!("автозапуск: {error}")),
+    };
+
+    // The application entry, and the same rule: the config decides, every start re-asserts it.
+    // This is the file that gives the window its name and icon (§12) — without it a Wayland
+    // compositor has nothing to match the window against.
+    let entry_note = match desktop.sync_entry(config.desktop_entry, &exec) {
+        Ok(_) => None,
+        Err(error) => Some(format!("ярлык: {error}")),
     };
 
     let start_minimized = config.start_minimized;
@@ -83,52 +111,43 @@ pub fn run() -> iced::Result {
         min_size: Some(iced::Size::new(880.0, 560.0)),
         exit_on_close_request: false,
         platform_specific: window::settings::PlatformSpecific {
-            application_id: autostart::APP_ID.to_string(),
+            application_id: desktop::APP_ID.to_string(),
             ..Default::default()
         },
         ..Default::default()
     };
     let start_in_tray = start_minimized && tray_available;
 
-    // A **daemon**, not an application, and this is the whole reason: `iced::application` exits
-    // when its last window is destroyed, and winit cannot hide a window on Wayland at all
-    // ("Not possible on Wayland" in `set_visible`). Closing the window therefore has to mean
-    // *destroying* it, and the app has to keep running afterwards — which is what a daemon does.
-    iced::daemon("Proton VPN", App::update, App::view)
-        .subscription(App::subscription)
-        .theme(|_state: &App, _window: window::Id| theme::app())
-        .run_with(move || {
-            let mut options = EngineOptions::new(store, config.clone());
-            options.tray_available = tray_available;
-            options.tray = presenter.as_ref().map(|presenter| {
-                Box::new(SharedPresenter(Arc::clone(presenter)))
-                    as Box<dyn protonvpn_core::engine::TrayPresenter>
-            });
-            let engine = protonvpn_core::engine::spawn(options);
+    let mut options = EngineOptions::new(store, config.clone());
+    options.tray_available = tray_available;
+    options.tray = presenter.as_ref().map(|presenter| {
+        Box::new(SharedPresenter(Arc::clone(presenter)))
+            as Box<dyn protonvpn_core::engine::TrayPresenter>
+    });
+    let engine = protonvpn_core::engine::spawn(options);
 
-            let mut app = App::new(engine, config, tray_rx, presenter, window_settings);
-            app.tray_available = tray_available;
-            app.notice = config_error.or(autostart_note);
+    let mut app = App::new(engine, config, tray_rx, presenter, window_settings);
+    app.tray_available = tray_available;
+    app.notice = config_error.or(autostart_note).or(entry_note);
 
-            // No window at all when the app is meant to start in the tray: "the app is in the tray
-            // and connected to the configured country, no window" is an exit criterion.
-            let open = if start_in_tray {
-                Task::none()
-            } else {
-                let (id, open) = window::open(app.window_settings.clone());
-                app.window = Some(id);
-                open.map(Message::WindowOpened)
-            };
+    // No window at all when the app is meant to start in the tray: "the app is in the tray
+    // and connected to the configured country, no window" is an exit criterion.
+    let open = if start_in_tray {
+        Task::none()
+    } else {
+        let (id, open) = window::open(app.window_settings.clone());
+        app.window = Some(id);
+        open.map(Message::WindowOpened)
+    };
 
-            let task = Task::batch([
-                open,
-                match startup_connect {
-                    Some(target) => Task::done(Message::StartupConnect(target)),
-                    None => Task::none(),
-                },
-            ]);
-            (app, task)
-        })
+    let task = Task::batch([
+        open,
+        match startup_connect {
+            Some(target) => Task::done(Message::StartupConnect(target)),
+            None => Task::none(),
+        },
+    ]);
+    (app, task)
 }
 
 /// Adapter so the tray handle can be shared with the engine and still be shut down by the app.
@@ -289,6 +308,7 @@ pub enum AppToggle {
     ConnectAtStartup,
     StartMinimized,
     Autostart,
+    DesktopEntry,
     Probe,
 }
 
@@ -470,6 +490,9 @@ pub struct App {
     console: ConsoleModel,
     tray_commands: Receiver<TrayCommand>,
     tray: Option<Arc<tray::TrayPresenter>>,
+    /// The entries we keep in step with the config. Held rather than rebuilt per call so that the
+    /// settings page can ask about them without reading the XDG environment on every frame.
+    desktop: Desktop,
     tray_available: bool,
     window: Option<window::Id>,
     window_settings: window::Settings,
@@ -519,6 +542,7 @@ impl App {
             console,
             tray_commands,
             tray,
+            desktop: Desktop::default(),
             tray_available: false,
             window: None,
             window_settings,
@@ -587,7 +611,7 @@ impl App {
                 self.engine.send(Request::Attention);
                 match self.window {
                     Some(id) => Task::batch([
-                        window::change_mode(id, window::Mode::Windowed),
+                        window::set_mode(id, window::Mode::Windowed),
                         window::gain_focus(id),
                     ]),
                     None => {
@@ -1013,10 +1037,7 @@ impl App {
     }
 
     fn scroll_to_bottom(&self) -> Task<Message> {
-        scrollable::snap_to(
-            scrollable::Id::new(CONSOLE_ID),
-            scrollable::RelativeOffset::END,
-        )
+        operation::snap_to_end(CONSOLE_ID)
     }
 
     /// The first time a settings surface is opened, ask the CLI for `config list`. The CLI costs
@@ -1078,9 +1099,17 @@ impl App {
             AppToggle::Autostart => {
                 let mut config = self.config.clone();
                 config.autostart = value;
-                match autostart::sync(value, &autostart::current_exec()) {
+                match self.desktop.sync_autostart(value, &desktop::current_exec()) {
                     Ok(_) => self.save_config(config),
                     Err(error) => self.notice = Some(format!("автозапуск: {error}")),
+                }
+            }
+            AppToggle::DesktopEntry => {
+                let mut config = self.config.clone();
+                config.desktop_entry = value;
+                match self.desktop.sync_entry(value, &desktop::current_exec()) {
+                    Ok(_) => self.save_config(config),
+                    Err(error) => self.notice = Some(format!("ярлык: {error}")),
                 }
             }
         }

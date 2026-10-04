@@ -10,7 +10,7 @@ pub(crate) mod login;
 pub(crate) mod overview;
 pub(crate) mod settings;
 
-use iced::widget::{Space, button, column, container, row, text, vertical_rule};
+use iced::widget::{Space, button, column, container, row, rule, text};
 use iced::{Alignment, Color, Element, Length, Padding, Theme};
 
 use crate::app::{App, Message, Page};
@@ -111,12 +111,14 @@ pub(crate) fn sidebar(app: &App) -> Element<'_, Message> {
         column![
             brand,
             nav,
-            iced::widget::Space::new(Length::Fill, Length::Fill),
-            vertical_rule(1.0).style(|_: &Theme| iced::widget::rule::Style {
+            iced::widget::Space::new()
+                .width(Length::Fill)
+                .height(Length::Fill),
+            rule::vertical(1.0).style(|_: &Theme| rule::Style {
                 color: theme::BORDER,
-                width: 1,
                 radius: 0.0.into(),
-                fill_mode: iced::widget::rule::FillMode::Full,
+                fill_mode: rule::FillMode::Full,
+                snap: false,
             }),
             status_line,
             account,
@@ -130,11 +132,11 @@ pub(crate) fn sidebar(app: &App) -> Element<'_, Message> {
 
     row![
         rail,
-        vertical_rule(1.0).style(|_: &Theme| iced::widget::rule::Style {
+        rule::vertical(1.0).style(|_: &Theme| rule::Style {
             color: theme::BORDER,
-            width: 1,
             radius: 0.0.into(),
-            fill_mode: iced::widget::rule::FillMode::Full,
+            fill_mode: rule::FillMode::Full,
+            snap: false,
         })
     ]
     .height(Length::Fill)
@@ -143,20 +145,24 @@ pub(crate) fn sidebar(app: &App) -> Element<'_, Message> {
 
 /// The little accent rule that marks the current page.
 fn nav_marker<'a>(active: bool) -> Element<'a, Message> {
-    container(Space::new(Length::Fixed(3.0), Length::Fixed(16.0)))
-        .style(move |_: &Theme| container::Style {
-            background: Some(iced::Background::Color(if active {
-                theme::ACCENT
-            } else {
-                Color::TRANSPARENT
-            })),
-            border: iced::Border {
-                radius: 2.0.into(),
-                ..Default::default()
-            },
-            ..container::Style::default()
-        })
-        .into()
+    container(
+        Space::new()
+            .width(Length::Fixed(3.0))
+            .height(Length::Fixed(16.0)),
+    )
+    .style(move |_: &Theme| container::Style {
+        background: Some(iced::Background::Color(if active {
+            theme::ACCENT
+        } else {
+            Color::TRANSPARENT
+        })),
+        border: iced::Border {
+            radius: 2.0.into(),
+            ..Default::default()
+        },
+        ..container::Style::default()
+    })
+    .into()
 }
 
 /// A round monogram from an account name: `user@proton.me` becomes `UP`.

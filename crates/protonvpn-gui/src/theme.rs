@@ -48,6 +48,7 @@ pub fn app() -> Theme {
                     text: TEXT,
                     primary: ACCENT,
                     success: SUCCESS,
+                    warning: WARNING,
                     danger: DANGER,
                 },
             )
@@ -69,6 +70,7 @@ pub fn card(_theme: &Theme) -> container::Style {
         // measured, a card's shadow accumulates into a grey wash across the card over the first
         // ten seconds of ticking. A hairline border reads just as well and cannot go wrong.
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -83,6 +85,7 @@ pub fn flat_card(_theme: &Theme) -> container::Style {
             radius: 8.0.into(),
         },
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -96,6 +99,7 @@ pub fn tile(_theme: &Theme) -> container::Style {
             radius: 8.0.into(),
         },
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -109,6 +113,7 @@ pub fn sidebar(_theme: &Theme) -> container::Style {
             radius: 0.0.into(),
         },
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -136,6 +141,7 @@ pub fn pill(background: Color) -> impl Fn(&Theme) -> container::Style {
             radius: 6.0.into(),
         },
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -159,6 +165,7 @@ pub fn filled(
                 radius: 8.0.into(),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     }
 }
@@ -184,6 +191,7 @@ pub fn outlined(
                 radius: 8.0.into(),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     }
 }
@@ -212,6 +220,7 @@ pub fn ghost(
                 radius: 8.0.into(),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     }
 }
@@ -231,6 +240,7 @@ pub fn connection_card(selected: bool) -> impl Fn(&Theme) -> container::Style + 
             radius: 10.0.into(),
         },
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -246,6 +256,7 @@ pub fn bare() -> impl Fn(&Theme, button::Status) -> button::Style + Clone {
             radius: 0.0.into(),
         },
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 

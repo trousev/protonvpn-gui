@@ -5,7 +5,7 @@
 //! every invocation. It is read-only, and it is deliberately the last thing in the window: the
 //! bottom of the screen is where a person looks when something is happening.
 
-use iced::widget::{button, column, container, horizontal_rule, row, scrollable, text};
+use iced::widget::{Id, button, column, container, row, rule, scrollable, text};
 use iced::{Alignment, Element, Font, Length, Padding, Theme};
 
 use crate::app::{App, CONSOLE_ID, Message};
@@ -37,7 +37,9 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
             text(connection.value.label()).size(12),
             widgets::faint("·"),
             text(connection.age_text()).size(12),
-            iced::widget::Space::new(Length::Fill, Length::Fixed(1.0)),
+            iced::widget::Space::new()
+                .width(Length::Fill)
+                .height(Length::Fixed(1.0)),
             if busy {
                 button(text("Прервать").size(12))
                     .padding(Padding::from([3, 9]))
@@ -54,11 +56,11 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
     .padding(Padding::from([6, 12]))
     .width(Length::Fill);
 
-    let rule = horizontal_rule(1.0).style(|_: &Theme| iced::widget::rule::Style {
+    let rule = rule::horizontal(1.0).style(|_: &Theme| rule::Style {
         color: theme::BORDER,
-        width: 1,
         radius: 0.0.into(),
-        fill_mode: iced::widget::rule::FillMode::Full,
+        fill_mode: rule::FillMode::Full,
+        snap: false,
     });
 
     if !app.console_expanded {
@@ -68,7 +70,9 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
     let controls = container(
         row![
             widgets::faint("транскрипт · вывод CLI показан дословно"),
-            iced::widget::Space::new(Length::Fill, Length::Fixed(1.0)),
+            iced::widget::Space::new()
+                .width(Length::Fill)
+                .height(Length::Fixed(1.0)),
             button(text("Вниз").size(12))
                 .padding(Padding::from([4, 10]))
                 .style(theme::outlined(theme::BORDER, theme::TEXT_MUTED))
@@ -106,7 +110,7 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
         controls,
         container(
             scrollable(list)
-                .id(scrollable::Id::new(CONSOLE_ID))
+                .id(Id::new(CONSOLE_ID))
                 .on_scroll(Message::ConsoleScrolled)
                 .height(Length::Fill),
         )
