@@ -7,11 +7,12 @@
 //! succeeding is not evidence that the CLI agreed (`docs/architecture.md` §5).
 
 use iced::widget::{
-    Space, button, column, container, pick_list, row, scrollable, text, text_input,
+    Space, button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
 };
 use iced::{Alignment, Element, Length, Padding, Theme};
 
 use protonvpn_core::model::Setting;
+use protonvpn_core::socks5::{Closed, GateState};
 
 use crate::app::{App, AppToggle, Message, SettingsTab, setting_label, setting_values};
 use crate::theme;
@@ -29,6 +30,7 @@ fn cli_keys(tab: SettingsTab) -> &'static [&'static str] {
             "custom-dns",
             "port-forwarding",
         ],
+        SettingsTab::Proxy => &[],
         SettingsTab::Polling => &[],
         SettingsTab::Account => &[],
     }
@@ -346,6 +348,7 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
             ]
             .spacing(12),
         ),
+        SettingsTab::Proxy => socks5_card(app),
         SettingsTab::Polling => {
             let age = app.shared.state.connection.age_text();
             widgets::card(
@@ -452,6 +455,170 @@ fn bullet<'a>(value: &'a str) -> Element<'a, Message> {
     row![widgets::faint("•"), widgets::muted(value)]
         .spacing(8)
         .into()
+}
+
+/// The local SOCKS5 proxy — exception #3, and the one screen where a paranoid setting is allowed to
+/// explain itself at length (`docs/architecture.md` §13).
+///
+/// The point of the whole screen is the state line: an application pointed at this address must be
+/// able to tell whether it is actually protected, and "the proxy is running" is not the same claim
+/// as "the proxy will refuse when the tunnel is gone".
+fn socks5_card(app: &App) -> Element<'_, Message> {
+    let view = &app.shared.socks5;
+    let stats = view.stats.snapshot();
+
+    let (tone, headline, advice): (Tone, String, Option<String>) = match view.gate.state() {
+        GateState::Open { source } => (
+            Tone::Success,
+            format!("открыт · маршрут подтверждён: {source}"),
+            None,
+        ),
+        GateState::Closed(reason) => {
+            let tone = match reason {
+                Closed::Disabled | Closed::NotConnected => Tone::Neutral,
+                _ => Tone::Warning,
+            };
+            let advice = match &reason {
+                Closed::Disabled => None,
+                Closed::NotConnected => {
+                    Some("Прокси откроется сам, как только CLI сообщит о подключении.".to_string())
+                }
+                Closed::Unverified { .. } => Some(
+                    "Приложение не видело, каким маршрут был до подключения, и не может \
+                     утверждать, что нынешний — туннель. Переподключитесь (Отключить, затем \
+                     Подключиться): тогда маршрут подтвердится."
+                        .to_string(),
+                ),
+                Closed::RouteChanged { .. } | Closed::RouteLost { .. } => Some(
+                    "Переподключитесь, чтобы подтвердить туннель заново: пока это не сделано, \
+                     прокси не выпустит ни байта."
+                        .to_string(),
+                ),
+                Closed::EgressIsBaseline { .. } => Some(
+                    "Проверка внешнего адреса увидела тот же адрес, что и до подключения. \
+                     Переподключитесь."
+                        .to_string(),
+                ),
+                Closed::ProbeUnanswered { .. } => Some(
+                    "Внешняя проверка туннеля не отвечает: без неё остаётся только локальная \
+                     проверка маршрута, а она видит не всё. Проверьте связь и переподключитесь, \
+                     чтобы туннель подтвердился заново."
+                        .to_string(),
+                ),
+                Closed::NotListening { .. } => {
+                    Some("Проверьте адрес и порт: слушать можно только localhost.".to_string())
+                }
+            };
+            (tone, format!("закрыт · {}", reason.describe()), advice)
+        }
+    };
+
+    let mut content = column![
+        widgets::eyebrow("Приложение · SOCKS5"),
+        widgets::muted(
+            "Локальный SOCKS5-прокси для программ, которые должны ходить в сеть только через \
+             VPN: приложение настраивается на этот адрес, а прокси отказывает всему, пока не \
+             подтверждено, что трафик идёт через туннель. Выключено по умолчанию."
+        ),
+        checkbox(app.config.socks5.enabled)
+            .label("Включить локальный SOCKS5-прокси")
+            .text_size(13)
+            .on_toggle(Message::Socks5Enabled),
+        row![
+            widgets::faint("Адрес"),
+            text_input("127.0.0.1", &app.socks5_address)
+                .on_input(Message::Socks5Address)
+                .padding(Padding::from([7, 10]))
+                .width(Length::Fixed(170.0)),
+            widgets::faint("Порт"),
+            text_input("1080", &app.socks5_port)
+                .on_input(Message::Socks5Port)
+                .padding(Padding::from([7, 10]))
+                .width(Length::Fixed(90.0)),
+            widgets::faint("Проверка туннеля, с"),
+            text_input("30", &app.socks5_verify)
+                .on_input(Message::Socks5Verify)
+                .padding(Padding::from([7, 10]))
+                .width(Length::Fixed(70.0)),
+            button(text("Применить").size(13))
+                .padding(Padding::from([8, 14]))
+                .style(theme::filled(theme::ACCENT))
+                .on_press(Message::Socks5Apply),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+        widgets::separator(),
+        row![
+            widgets::status_chip(tone, headline),
+            Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
+            button(text("Копировать адрес").size(12))
+                .padding(Padding::from([6, 12]))
+                .style(theme::outlined(theme::BORDER, theme::TEXT))
+                .on_press(Message::CopySocks5),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+        if app
+            .copied_socks5_at
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2))
+        {
+            widgets::muted(format!("{} скопирован", app.socks5_address_text()))
+        } else {
+            widgets::faint(format!(
+                "Настройте приложение на {} (SOCKS5, без аутентификации).",
+                app.socks5_address_text()
+            ))
+        },
+        widgets::muted(format!(
+            "принято {} · отказано {} · активно {} · передано {} / {}{}",
+            stats.accepted,
+            stats.refused,
+            stats.active,
+            human_bytes(stats.up),
+            human_bytes(stats.down),
+            if stats.overloaded > 0 {
+                format!(" · нет места {}", stats.overloaded)
+            } else {
+                String::new()
+            },
+        )),
+    ]
+    .spacing(12);
+
+    if let Some(advice) = advice {
+        content = content.push(widgets::note(advice));
+    }
+    if !app.config.probe_enabled {
+        content = content.push(widgets::faint(
+            "Внешняя проверка туннеля выключена вместе с проверкой внешнего адреса на вкладке \
+             «Опрос»: остаётся только локальная проверка маршрута, каждые 200 мс.",
+        ));
+    }
+
+    content = content.push(widgets::faint(
+        "Только localhost и только IPv4; из команд SOCKS5 — только CONNECT. Аутентификации нет: \
+         порт слушает петлевой интерфейс, ровно как у `ssh -D`.",
+    ));
+    content = content.push(widgets::faint(
+        "Маршрут ядра перечитывается каждые 200 мс — без пакетов и без третьих сторон. Раз в \
+         указанное число секунд туннель подтверждается внешним адресом той же проверкой curl, что \
+         и на «Обзоре»; 0 выключает её, локальная проверка остаётся.",
+    ));
+
+    widgets::card(content)
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    let bytes = bytes as f64;
+    if bytes < KIB {
+        format!("{} Б", bytes as u64)
+    } else if bytes < MIB {
+        format!("{:.1} КиБ", bytes / KIB)
+    } else {
+        format!("{:.1} МиБ", bytes / MIB)
+    }
 }
 
 fn widget_toggle<'a>(

@@ -24,9 +24,11 @@ comes from `protonvpn status`, never from inspecting the system.
 The temptation to "just read NetworkManager, it's easier" will be strong, and it is the single
 most likely way to destroy this design. Do not.
 
-Exactly two exceptions are sanctioned and bounded —
-[`docs/architecture.md`](docs/architecture.md) §0 has the table: a `curl` ground-truth probe and
-NAT-PMP for the port-forwarding lease. Do not add a third without a human decision.
+Exactly three exceptions are sanctioned and bounded —
+[`docs/architecture.md`](docs/architecture.md) §0 has the table: a `curl` ground-truth probe,
+NAT-PMP for the port-forwarding lease, and a loopback-only SOCKS5 proxy that refuses to relay
+unless the tunnel can be shown to carry traffic (§13). Do not add a fourth without a human
+decision.
 
 ## Where things are
 
@@ -39,7 +41,9 @@ NAT-PMP for the port-forwarding lease. Do not add a third without a human decisi
 | `crates/protonvpn-core/` | all VPN logic. **No UI dependency** — the tray must work with no window |
 | `crates/protonvpn-core/tests/fixtures/pty/` | the frozen parser corpus (13 invocations + metadata) |
 | `crates/protonvpn-gui/` | UI only: the window, the console pane, the tray, the `.desktop` entries |
-| `crates/protonvpn-core/src/engine.rs` | the one thread that owns state; the only writer of the log bus, the interpreter state and the lease |
+| `crates/protonvpn-core/src/engine.rs` | the one thread that owns state; the only writer of the log bus, the interpreter state, the lease and the proxy's gate |
+| `crates/protonvpn-core/src/socks5.rs` | the local SOCKS5 proxy (exception #3): the protocol, the listener, the counters |
+| `crates/protonvpn-core/src/net/route.rs` | the kernel's source-address answer the proxy's gate is built on — a connected UDP socket that is never written to |
 | `packaging/` | AppImage build script, `.desktop`, icon |
 
 ## Commands
@@ -139,6 +143,10 @@ can only be checked by a real run.
 - **`docs/research.md` records two retracted conclusions** — NetShield breaking on client exit,
   and GeoIP consistency checking — kept deliberately, with the evidence that overturned them. Do
   not re-derive the old conclusions from the surrounding text.
+- **The SOCKS5 proxy arms on evidence, never on hope.** It opens only when the kernel's route
+  differs from a route observed while the CLI said the tunnel was down, so an application started
+  while the VPN is already up finds the proxy **shut** until one reconnect. That is deliberate
+  (`docs/architecture.md` §13): a proxy that cannot show it is protecting you must not claim it is.
 - **State must be shown with its age** (`updated 3 mins ago`), never as a bare verdict and never
   with the word "stale". See `docs/architecture.md` §7.
 - **winit cannot hide a window on Wayland** — `set_visible` is literally "Not possible on
@@ -192,10 +200,15 @@ surfaced a second bug underneath: invocation ids were minted twice — by the en
 queued, by the log bus when the record opened — so anything recorded in between (a `curl` reading,
 a NAT-PMP renewal) could swap ids with a waiting command and file that command's output under the
 note, where the interpreter would read it as the note's; the bus now takes the id the engine
-reserved (§3).
+reserved (§3). Then the paranoid option ([`docs/architecture.md`](docs/architecture.md) §13):
+`socks5.rs` is a loopback-only SOCKS5 proxy, off by default, whose gate opens only on a route the
+kernel was seen to change, whose watchdog re-reads that route every 200 ms without a packet, and
+whose `net/route.rs` needs no NetworkManager, no D-Bus and no Proton file to answer the only
+question it asks.
 
 **Next:** a live `signin` run with real credentials (needs a human — the password prompt is
-captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; desktop
+captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; a live
+SOCKS5 round trip with a real application on the other end of the listener; desktop
 notifications, which need a human decision because they would be a new sanctioned exception.
 
 **Verified live** (2026-09-30, two full rounds): the app connects on start to the configured

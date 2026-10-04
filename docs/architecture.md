@@ -29,8 +29,9 @@ each exists because the CLI genuinely cannot do the job.
 |---|---|---|---|
 | 1 | `curl` to an IP-echo service | ground truth: the CLI's self-report is unreliable (measured: it printed `149.88.27.213` while real egress was `149.22.89.89`) | read-only, third party, keyless, no Proton data involved |
 | 2 | NAT-PMP to `10.2.0.1:5351` | the port-forwarding lease — the CLI only sets a preference and tells the user to run an external script | gateway is publicly documented by Proton, port is an IANA standard (RFC 6886); probe with opcode 0 first, degrade honestly |
+| 3 | A local SOCKS5 listener, and the kernel's route answer behind it | an application that must never touch the network without the VPN needs a door that closes by itself; nothing in `protonvpn` provides one | **off by default**, loopback only, IPv4 + `CONNECT` only, fails closed on evidence rather than on hope (§13) |
 
-A third exception was tried and withdrawn: an opt-in push of the forwarded port into a local
+An exception was tried and withdrawn: an opt-in push of the forwarded port into a local
 qBittorrent over its Web API. It never worked against a real client, and a convenience for one
 torrent client is not worth a permanent hole in the "only `protonvpn`" rule. The port is
 displayed and copyable instead (§10.4), which is what the feature was for.
@@ -390,6 +391,20 @@ What would have to be true to try again:
 
 ---
 
+### 10.5 A SOCKS5 proxy vs the "only `protonvpn`" rule — **RESOLVED: granted**
+
+**Ruling:** a loopback-only, off-by-default SOCKS5 listener that relays nothing until the tunnel
+can be *shown* to be carrying traffic is **exception #3**. The whole design — the gate, the
+watchdog, the dial-time checks, and what it honestly cannot promise — is §13.
+
+The one new system fact it needs is the kernel's own source-address answer for off-link traffic.
+That is not "how the VPN works": it is the question every client asks the kernel when it opens a
+socket, and all we keep is whether the answer changed.
+
+---
+
+---
+
 ## 11. Connections — where a preset lives
 
 A **connection** is a saved spelling of `protonvpn connect`. Everything the CLI lets one connect
@@ -498,3 +513,106 @@ iced 0.14 initializes the compositor lazily on the first real window instead (`i
 "…and get rid of the ghost boot window"), so there is nothing left to hide. Do not go back: the
 upgrade also took 29 crates out of the Linux closure — `png` with `flate2` and `miniz_oxide`,
 `palette`, `rayon`, the `drm` family — and added 6.
+
+---
+
+## 13. The local SOCKS5 proxy — exception #3
+
+An application that **must not reach the network without the VPN** has no way to express that
+through this project today, and no way to express it through `protonvpn`: the CLI connects, and
+then every program on the machine is on its own. The proxy is the door for exactly that
+application: point it at `127.0.0.1:1080` in the application's own settings, and it gets the
+system's internet while the tunnel is up, and nothing at all when it is not.
+
+**Off by default. Loopback only. IPv4 only. `CONNECT` only. No authentication.** Disabled until
+the user turns it on, because it is a service, and this application does not start services on
+people's behalf.
+
+### 13.1 What makes it fail closed
+
+"Fail closed" cannot mean "check `protonvpn status` and hope the check is current" — the CLI costs
+a second per call and its self-report is not evidence (§8). So the gate is built on the kernel's
+own answer to a question any client asks:
+
+> If an off-link IPv4 packet were sent now, which source address would the kernel use?
+
+That is a connected UDP socket, never written to, no DNS, dropped immediately
+([`net/route.rs`](../crates/protonvpn-core/src/net/route.rs)). It reveals nothing about how the
+tunnel works — only whether the answer has changed, which is the same evidence the egress probe
+uses, moved from the public address to the local route.
+
+| Step | Mechanism | Cost | What it catches |
+|---|---|---|---|
+| 1 | **The reference.** While the CLI reports the tunnel down — and for three seconds after each such report, so the kernel can withdraw the tunnel's address — the route is sampled and remembered. One more sample is taken at startup, before the CLI has said anything; it runs whether or not the proxy is enabled, because it is four syscalls and a state the user may switch on at any moment. A reference is **withdrawn** whenever the gate is closed on suspicion (steps 4-6): evidence that the route moved under us is spent, and arming again needs a fresh look while the CLI says down | four syscalls, no packets | nothing on its own; it is what turns step 2 into evidence |
+| 2 | **The gate opens** only when the CLI reports `Connected` *and* the current route differs from the reference | one route read | a route that was never shown to be the tunnel. If the application starts while the VPN is already up, every route it has seen is the tunnel's own, so the gate stays **shut** and the settings page says why: reconnect once, and it arms |
+| 3 | **Every dial** re-reads the route before connecting, and compares the socket's own `local_addr` after connecting — before one byte of the application's is relayed | one route read and one `getsockname`, no packets | the route moving while the dial was in flight (see §13.2 for how wide that window really is) |
+| 4 | **The watchdog** re-reads the route every 200 ms while the gate is open; disagreement closes the gate, drops every relayed connection, and withdraws the reference. It is a 200 ms poll, and the engine closes the gate on its next turn — so a new dial is refused at once and what is already relaying dies within about a quarter of a second | four syscalls, no packets | the tunnel going away, without waiting for a `status` poll |
+| 5 | **The egress watch** runs the sanctioned `curl` probe (exception #1) every `verify_seconds` (default 30, `0` = off — and nothing at all if the probe itself is switched off in «Опрос») while the CLI says connected: the pre-connection address coming back means the tunnel is not carrying traffic, whatever the CLI says | one HTTPS request | the tunnel that is still routed but no longer passes anything |
+| 6 | **Dial failures** that implicate the path — a timeout or an unreachable network, **twice in a row** — close the gate. A relayed connection clears the count, and so does a destination that answered and said no: both prove the path works | nothing | the same case, noticed sooner |
+
+A dial the gate refuses gets SOCKS5 reply `0x02` (not allowed by ruleset); the other replies are
+the ordinary ones — `0x07` for a command we do not speak, `0x08` for an IPv6 literal, `0x04` for a
+name with no A record, `0x03` for a dial that came from the wrong address. The listener stays bound while
+the feature is enabled even when the gate is shut: an application that gets a refusal can say so,
+and — the paranoid reason — a port that is released is a port another process can take.
+
+**A gate closed on suspicion re-arms the same way it armed the first time**: the CLI has to report
+the tunnel down (so a fresh reference can be taken), and then up, with the route different from that
+reference. There is deliberately no "check again" that skips the first half — a different route is
+not a tunnel, and a proxy that can be talked into opening on one is not the proxy this section
+describes. The settings page says as much, and the remedy is one reconnect.
+
+Two closes do **not** spend the reference: a listener that never came up, and the user switching the
+proxy off. Fixing a port number says nothing about the route, and punishing it with a reconnect
+would be superstition rather than safety.
+
+### 13.2 What it is not, and what it honestly cannot promise
+
+- **The standard library cannot bind a source address before connecting.** This toolchain's
+  `std::net` has no `TcpSocket`, so instead of binding, step 3 checks the address the kernel
+  actually used. The window between the two is not microseconds: the name lookup and the connect
+  sit in it, up to the dial timeout of ten seconds. If the route moves inside that window, the
+  handshake goes out by whatever route exists — the destination address and the machine's real
+  source address go with it, the application's bytes do not, and the connection is refused and
+  reported as soon as the address is checked.
+- **The gate knows one fact: the source address the kernel picks.** A route change that keeps that
+  address — another gateway on the same interface — is invisible to it. That is the egress watch's
+  job, and it is why the two exist together.
+- **DNS is the system resolver's**, after the gate and before the dial, exactly as it would be for
+  the application without a proxy. We do not add a resolver, and we do not read `/etc/resolv.conf`.
+- **IPv6 destinations are refused** with `0x08` rather than guessed at: a hop the gate cannot pin
+  is a hop the proxy does not take. Domain names are resolved to A records at the proxy, so an
+  application that sends names never has to know.
+- **Loopback destinations, while the gate is open**, are relayed to the loopback address; they
+  never leave the machine. A shut gate refuses them too.
+- **A destination the tunnel does not carry — the router, a NAS, anything on the local network —
+  is refused** (`0x03`), because everything but a loopback address must come from the pinned
+  source. The proxy relays to the internet through the tunnel; it is not a way onto your own LAN.
+- **No authentication**, because the listener is loopback-only — and that is exactly the promise
+  `ssh -D` makes: any local process, including one belonging to another user of the machine, can
+  use the door while it is open. Authentication would not change that; it would only move the
+  secret onto the same machine.
+- **It is not a boundary against a local attacker**, and it is not a firewall. It is one door, for
+  one application, that latches itself.
+- **Individual connections never enter the console.** A browser would drown the transcript; the
+  counters are on the settings page and the lifecycle gets pseudo-invocations, like every other
+  thing we do that is not `protonvpn` (§10.4).
+
+### 13.3 Where it lives
+
+`socks5.rs` owns the listener, the protocol and the counters; `net/route.rs` owns the one system
+fact. The **gate is written only by the engine** — `open` and `close` are `pub(crate)`, the proxy
+reads the gate and reports `Socks5Event`, and §1's "one writer of state" still holds: the proxy's
+threads send into the same request queue as everything else, and they cannot open the door
+themselves. A close also drops what is already relaying, which is why every path that closes the
+gate goes through one of the engine's two methods rather than touching the gate directly.
+
+Two deliberate exceptions to the logging rule, both bounded:
+
+- **The counters** are atomics owned by the proxy's threads, because a per-connection line in the
+  console would be noise, and a counter that had to travel through the engine would be a queue
+  nobody needs.
+- **The background tunnel check** does not write a line per run — two a minute would drown a
+  transcript that is supposed to be read. Its *reading* is state like any other: it lands in
+  `Egress::current` and the Overview shows it with its age (§7). What the console gets is the
+  conclusion: a gate that closed, and why.
