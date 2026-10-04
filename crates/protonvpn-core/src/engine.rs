@@ -1482,6 +1482,11 @@ esac
                 .map(|invocation| invocation.command_line())
                 .collect::<Vec<_>>()
         );
+        // Let go of the bus before asking the engine to stop: it takes that same lock to fold the
+        // events of the `info` child that is still running, so waiting for it while holding the
+        // lock is a deadlock with a five-second fuse. That is the fuse this test tripped on a
+        // loaded CI runner — and why every other test in this file drops the guard first.
+        drop(bus);
 
         assert!(handle.shutdown(Duration::from_secs(5)));
     }
