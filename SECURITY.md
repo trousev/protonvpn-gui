@@ -15,24 +15,26 @@ Proton VPN CLI. It does not read NetworkManager, D-Bus state, the keyring, or Pr
 files, and it does not take the session-bus name `proton.vpn.app.gtk`, because doing so would break
 the CLI it depends on.
 
-Exactly three exceptions exist, each bounded, and they are listed with their reasoning in
+Exactly two exceptions exist, each bounded, and they are listed with their reasoning in
 [`docs/architecture.md`](docs/architecture.md) §0:
 
 | Exception | What it can touch |
 |---|---|
 | `curl` to an IP-echo service | a keyless third-party URL, to see whether the egress address actually changed |
 | NAT-PMP to the documented Proton gateway `10.2.0.1:5351` | the port-forwarding lease, UDP only |
-| qBittorrent Web API | `localhost` only, **off by default** |
 
-Anything that would become a fourth exception is a decision for a human, not a patch.
+A third — an opt-in push of the forwarded port into a local qBittorrent — was built and then
+removed: it never worked against a real client, and it is not worth a permanent hole in the rule
+above. See [`docs/architecture.md`](docs/architecture.md) §10.4.
+
+Anything that would become a third exception is a decision for a human, not a patch.
 
 ## Secrets
 
 - Passwords and 2FA codes are written to the CLI's terminal (a PTY) and **never** into the
   transcript, the log, or the config file.
-- The optional qBittorrent password is held in memory for the session only; it is not part of the
-  config format, and a test asserts that it cannot be.
-- The application stores one file of its own, `~/.config/protonvpn-gui/config.json`.
+- The application stores one file of its own, `~/.config/protonvpn-gui/config.json`, and it has no
+  secret fields: the config format is a list of booleans, connection profiles and one preset name.
 
 ## Supply chain
 

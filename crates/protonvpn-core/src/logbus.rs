@@ -20,14 +20,14 @@ pub const DEFAULT_INVOCATION_CAPACITY: usize = 250;
 /// Per-invocation line cap. `countries list` is ~250 lines; this is two orders of magnitude up.
 pub const DEFAULT_LINE_CAPACITY: usize = 20_000;
 
-/// Where an invocation came from. A `Note` is **our** narration (the probe, a NAT-PMP renewal, a
-/// qBittorrent push) and must never be dressed up as a `protonvpn` command —
-/// `docs/architecture.md` §10.4.
+/// Where an invocation came from. A `Note` is **our** narration (the `curl` probe, a NAT-PMP
+/// renewal) and must never be dressed up as a `protonvpn` command —
+/// `docs/architecture.md` §0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvocationKind {
     /// A real `protonvpn` child process attached to a PTY.
     ProtonVpn,
-    /// Something else we did, shown honestly as such: `curl`, NAT-PMP, an HTTP push.
+    /// Something else we did, shown honestly as such: `curl`, NAT-PMP.
     Note,
 }
 

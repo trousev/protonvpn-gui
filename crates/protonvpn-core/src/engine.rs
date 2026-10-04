@@ -10,7 +10,7 @@
 //! * the log bus and the interpreter's state,
 //! * the poll schedule — idle cadence, immediate read after a state-changing invocation,
 //!   attention-driven read,
-//! * the port-forwarding lease, its renewal timer, and the opt-in qBittorrent push,
+//! * the port-forwarding lease and its renewal timer,
 //! * secrets for `signin`, held in memory only, and only while the child is running.
 //!
 //! The engine is deliberately GUI-free: it drives the tray through the [`TrayPresenter`] trait, so
@@ -34,7 +34,6 @@ use crate::model::{
 use crate::net::natpmp::{self, NatPmp, Protocol};
 use crate::poll::PollSchedule;
 use crate::probe::{self, Probe, ProbeError};
-use crate::qbittorrent;
 use crate::runner::{Job, Runner, RunnerEvent};
 
 /// Engine tick. Short enough that streamed output feels live, long enough to be free.
@@ -98,8 +97,6 @@ pub enum Request {
     Cancel,
     /// Replace our own configuration.
     SaveConfig(Box<Config>),
-    /// The qBittorrent password, which never reaches the config file.
-    SetQBittorrentPassword(String),
     Ui(UiCommand),
     /// Internal: the probe fallback chain picked an endpoint (or did not).
     ProbeChosen {
@@ -267,8 +264,6 @@ pub fn spawn(options: EngineOptions) -> EngineHandle {
         lease_attempted_for: None,
         active_port_forwarding: None,
         pending_connect: None,
-        qbittorrent_password: String::new(),
-        pushed_port: None,
         secrets: None,
         tray: options.tray,
         tray_view: None,
@@ -343,9 +338,6 @@ struct Engine {
     /// global — it has no per-connection settings — so a profile that wants a lease sets it first
     /// and the connect follows, both visible in the console.
     pending_connect: Option<ConnectTarget>,
-    /// qBittorrent's password, held in memory only — never written to the config file.
-    qbittorrent_password: String,
-    pushed_port: Option<u16>,
     secrets: Option<Secrets>,
     tray: Option<Box<dyn TrayPresenter>>,
     tray_view: Option<TrayView>,
@@ -479,11 +471,6 @@ impl Engine {
                 }
             }
             Request::SaveConfig(config) => self.save_config(*config),
-            Request::SetQBittorrentPassword(password) => {
-                self.qbittorrent_password = password;
-                // A changed credential invalidates what we pushed; the next port change re-pushes.
-                self.pushed_port = None;
-            }
             Request::Ui(command) => {
                 let mut shared = self.lock();
                 shared.ui_commands.push_back(command);
@@ -559,7 +546,6 @@ impl Engine {
                 self.release_lease("перед новым подключением");
             }
             self.lease_attempted_for = None;
-            self.pushed_port = None;
         }
         if matches!(intent, Intent::Disconnect) {
             self.state.port_forwarding = Observation::now(PortForwarding::Pending);
@@ -834,7 +820,6 @@ impl Engine {
                     self.submit(Intent::RefreshStatus);
                 }
                 if subcommand == "disconnect" {
-                    self.pushed_port = None;
                     self.lease_attempted_for = None;
                 }
             }
@@ -1166,7 +1151,6 @@ impl Engine {
                     external_ip,
                 });
                 self.publish_state();
-                self.push_port_to_qbittorrent(port);
             }
             None => {
                 self.state.port_forwarding = Observation::now(PortForwarding::Unavailable(
@@ -1233,28 +1217,6 @@ impl Engine {
         );
         self.state.port_forwarding = Observation::now(PortForwarding::Idle);
         self.publish_state();
-    }
-
-    fn push_port_to_qbittorrent(&mut self, port: u16) {
-        if !self.config.qbittorrent.enabled || self.pushed_port == Some(port) {
-            return;
-        }
-        let config = self.config.qbittorrent.clone();
-        let started_at = SystemTime::now();
-        let display = qbittorrent::request_display(&config, port);
-        let result = qbittorrent::push_port(&config, port, &self.qbittorrent_password);
-        let lines = match &result {
-            Ok(report) => vec![report.result.clone()],
-            Err(error) => vec![error.to_string()],
-        };
-        self.record_note(display, lines, started_at, since(started_at));
-        match result {
-            Ok(_) => {
-                self.pushed_port = Some(port);
-                self.note("порт передан в qBittorrent");
-            }
-            Err(error) => self.note(&format!("qBittorrent: {error}")),
-        }
     }
 }
 
@@ -1660,7 +1622,6 @@ esac
 
         let mut config = handle.snapshot().config;
         config.start_minimized = true;
-        config.qbittorrent.enabled = true;
         handle.send(Request::SaveConfig(Box::new(config.clone())));
         thread::sleep(Duration::from_millis(200));
 
@@ -1668,7 +1629,6 @@ esac
             .load()
             .unwrap();
         assert!(written.start_minimized);
-        assert!(written.qbittorrent.enabled);
         assert_eq!(handle.snapshot().config, config);
         assert!(handle.shutdown(Duration::from_secs(5)));
     }

@@ -62,8 +62,6 @@ release was asked for.
 - Login and logout, including the password and 2FA prompts, which are answered over a PTY.
 - **Port forwarding**, which the official CLI cannot do on its own: the lease is renewed from our
   own NAT-PMP client, and the port is shown with a copy button.
-- An optional, off-by-default qBittorrent push so the forwarded port lands in your torrent client
-  without a copy-paste.
 - A tray icon that works with no window at all, and an autostart entry.
 
 ## The rules it follows
@@ -78,13 +76,16 @@ Two rules shape the whole design, and they are the reason the code looks the way
    duration, raw output — and shown in a collapsible pane. Both the state interpreter and the
    console read that one stream, so they can never disagree about what the CLI said.
 
-Three exceptions are sanctioned and bounded, each because the CLI genuinely cannot do the job:
+Two exceptions are sanctioned and bounded, each because the CLI genuinely cannot do the job:
 
 | Exception | Why | Bounds |
 |---|---|---|
 | `curl` to an IP-echo service | the CLI's own `Your new IP address is …` is not the egress address (measured: it printed `149.88.27.213` while real egress was `149.22.89.89`) | read-only, third party, keyless |
 | NAT-PMP to `10.2.0.1:5351` | the port-forwarding lease; the CLI only sets a preference and tells you to run a script | IANA-standard port, publicly documented gateway, opcode-0 probe first, degrades honestly |
-| qBittorrent Web API | hand the forwarded port to the torrent client | **off by default**, localhost only |
+
+A third was built and withdrawn: pushing the forwarded port into a local qBittorrent over its Web
+API. It never worked against a real client, and convenience for one torrent client is not worth a
+standing hole in the rule above — the port is displayed and copyable instead.
 
 ## Requirements
 
@@ -124,13 +125,14 @@ Everything the app itself owns lives in one file:
 ```
 
 It holds the app's own preferences (connect on start, start minimized, autostart, the app-menu
-entry, the egress probe, the port-forwarding lease, and the qBittorrent host/port/user). Two
-deliberate omissions:
+entry, the egress probe, the port-forwarding lease) and the connections you build. There are no
+secrets in it:
 
 - **Proton's own `settings.json` and `app-config.json` are never read or written.** Those belong
   to the official app; the CLI settings are read through `protonvpn config list` like any other
   state.
-- **The qBittorrent password is never written to disk.** It lives in memory for the session only.
+- **Nothing the app needs in confidence is stored.** A password or a 2FA code goes straight to the
+  CLI's PTY and lives in memory only while that command runs.
 
 Autostart is a plain `~/.config/autostart/protonvpn-gui.desktop`, written only when you ask for it.
 The application entry and its icon live in `~/.local/share/{applications,icons/hicolor}` and are
@@ -194,7 +196,7 @@ someone to mean it.
 - **Desktop notifications are not implemented.** They would need either another program or the
   session bus beyond the tray, and neither is sanctioned yet. A human decision, not an oversight.
 - **The window costs 195 crates, and that is where they all are.** The wrapper itself —
-  `protonvpn-core`: PTY runner, interpreter, launcher, poller, probe, NAT-PMP, qBittorrent — is 26.
+  `protonvpn-core`: PTY runner, interpreter, launcher, poller, probe, NAT-PMP — is 26.
   The rest is `iced` 0.14, and under it `winit`, `softbuffer` and the tray's `zbus`. `Cargo.lock`
   also lists Android, Windows and macOS crates, because that is what `winit` declares and a lock
   file is a union over every target; none of them is compiled here. This is a Linux-only tool, and
@@ -218,7 +220,6 @@ crates/protonvpn-core/     all VPN logic, no UI dependency (the tray must work h
   poll.rs                  five-minute idle cadence, immediate after a change, attention-driven
   probe.rs                 the `curl` ground-truth probe (exception #1)
   net/natpmp.rs            the port-forwarding lease (exception #2)
-  qbittorrent.rs           the opt-in local push (exception #3)
   engine.rs                the one thread that owns state
 crates/protonvpn-gui/      views only: window, console pane, tray, the .desktop entries
 ```

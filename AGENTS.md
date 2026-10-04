@@ -24,10 +24,9 @@ comes from `protonvpn status`, never from inspecting the system.
 The temptation to "just read NetworkManager, it's easier" will be strong, and it is the single
 most likely way to destroy this design. Do not.
 
-Exactly three exceptions are sanctioned and bounded —
-[`docs/architecture.md`](docs/architecture.md) §0 has the table: a `curl` ground-truth probe,
-NAT-PMP for the port-forwarding lease, and an opt-in qBittorrent integration on localhost. Do not
-add a fourth without a human decision.
+Exactly two exceptions are sanctioned and bounded —
+[`docs/architecture.md`](docs/architecture.md) §0 has the table: a `curl` ground-truth probe and
+NAT-PMP for the port-forwarding lease. Do not add a third without a human decision.
 
 ## Where things are
 
@@ -161,7 +160,7 @@ can only be checked by a real run.
 **Done:** research; architecture; workspace; the PTY driver (`src/pty.rs`); the capture harness
 (`src/bin/capture_fixtures.rs`, `scripts/capture-fixtures.sh`); a frozen PTY fixture corpus with
 guarantee tests. Then Phase 1 and most of Phase 2: `runner.rs`, `logbus.rs`, `interpreter.rs`,
-`parse.rs`, `launcher.rs`, `poll.rs`, `probe.rs`, `net/natpmp.rs`, `qbittorrent.rs`, `config.rs`
+`parse.rs`, `launcher.rs`, `poll.rs`, `probe.rs`, `net/natpmp.rs`, `config.rs`
 and `engine.rs`, plus the `iced` window, the console pane, the `ksni` tray and autostart. Then the
 project's own plumbing: protected `main`, CI on every pull request, and a release pipeline. Then
 the connection manager and the redesigned window ([`docs/architecture.md`](docs/architecture.md)
@@ -180,11 +179,14 @@ same decision. Then two fixes that came out of running the app on GNOME: iced we
 0.14, which removes the ghost "winit window" from Alt+Tab and takes the Linux closure from 218
 crates to 195, and the app now installs its own `.desktop` entry and icon into `~/.local/share`,
 which is the only way a Wayland desktop can give the window a name and an icon at all
-(`docs/architecture.md` §12).
+(`docs/architecture.md` §12). Then an opt-in qBittorrent port push — the third sanctioned
+exception — was built and removed again: it never worked against a real client, and it is not
+worth a standing hole in the "only `protonvpn`" rule ([`docs/architecture.md`](docs/architecture.md)
+§0, §10.4).
 
 **Next:** a live `signin` run with real credentials (needs a human — the password prompt is
 captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; desktop
-notifications, which need a human decision because they would be a fourth sanctioned exception.
+notifications, which need a human decision because they would be a new sanctioned exception.
 
 **Verified live** (2026-09-30, two full rounds): the app connects on start to the configured
 country and the tray reports it, `protonvpn status` agrees, the egress address changes and comes

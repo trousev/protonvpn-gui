@@ -3,9 +3,9 @@
 //! Design contract: [`docs/architecture.md`](../../../docs/architecture.md). The short version:
 //!
 //! * **The only program we execute is `protonvpn`.** We do not know, and must not know, how it
-//!   connects: no NetworkManager, no D-Bus, no keyring, no Proton-internal files. Three exceptions
-//!   are sanctioned and bounded — a `curl` ground-truth probe ([`probe`]), NAT-PMP for the
-//!   port-forwarding lease ([`net::natpmp`]) and an opt-in qBittorrent push ([`qbittorrent`]).
+//!   connects: no NetworkManager, no D-Bus, no keyring, no Proton-internal files. Two exceptions
+//!   are sanctioned and bounded — a `curl` ground-truth probe ([`probe`]) and NAT-PMP for the
+//!   port-forwarding lease ([`net::natpmp`]).
 //! * **The console is the product.** Every invocation is recorded verbatim — argv, exit code and
 //!   raw output — in [`logbus`], and both the console and the state reducer read that one stream.
 //! * **The launcher maps intents to argv and never interprets results** ([`launcher`]).
@@ -35,7 +35,6 @@ pub mod parse;
 pub mod poll;
 pub mod probe;
 pub mod pty;
-pub mod qbittorrent;
 pub mod runner;
 
 pub use engine::{EngineHandle, EngineOptions, Request, TrayPresenter, TrayView};
