@@ -88,7 +88,8 @@ fn boot() -> (App, Task<Message>) {
 
     let start_minimized = config.start_minimized;
     // "Connect at startup" connects the *selected connection*, because that is the only thing the
-    // app has that means "what should `protonvpn connect` be".
+    // app has that means "what should `protonvpn connect` be". It is a request, not a command: the
+    // engine checks the CLI's own status first and does nothing when the tunnel is already up.
     let startup_connect = config.connect_at_startup.then(|| selected_target(&config));
 
     // The tray comes first, because whether there *is* one decides whether a start-to-tray run is
@@ -562,7 +563,9 @@ impl App {
         match message {
             Message::Tick => self.tick(),
             Message::StartupConnect(target) => {
-                self.engine.send(Request::Run(Intent::Connect(target)));
+                // Not `Intent::Connect`: the app is acting on its own here, and must not tear down
+                // a tunnel the user already has. The engine decides that, after the first `status`.
+                self.engine.send(Request::StartupConnect(target));
                 Task::none()
             }
             Message::CloseRequested(id) => {
