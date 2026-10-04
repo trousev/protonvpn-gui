@@ -289,7 +289,9 @@ mod tests {
         let mut bus = LogBus::default();
         let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
         let at = SystemTime::now();
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::ProtonVpn,
             argv.clone(),
             None,
@@ -553,7 +555,9 @@ mod tests {
         let mut bus = LogBus::default();
         let at = SystemTime::now();
         let argv = vec!["protonvpn".to_string(), "connect".to_string()];
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::ProtonVpn,
             argv.clone(),
             None,
@@ -576,7 +580,9 @@ mod tests {
     fn notes_never_touch_state() {
         let mut bus = LogBus::default();
         let at = SystemTime::now();
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::Note,
             Vec::new(),
             Some("curl https://ifconfig.co/json".into()),

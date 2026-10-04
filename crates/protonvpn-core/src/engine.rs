@@ -74,6 +74,11 @@ pub type ProbeResult = Result<EgressReading, ProbeError>;
 pub enum Request {
     /// Run a `protonvpn` command.
     Run(Intent),
+    /// Connect because *we* decided to at startup — which is not the same as a human asking for a
+    /// tunnel, because `connect` against a live tunnel silently switches servers
+    /// (`docs/cli-surface.md` §4.4). The engine waits for the first `status` reading and stands
+    /// down if it already reports a connection.
+    StartupConnect(ConnectTarget),
     /// Log in. The password and 2FA code travel with the request and are never logged.
     SignIn {
         username: String,
@@ -264,13 +269,14 @@ pub fn spawn(options: EngineOptions) -> EngineHandle {
         lease_attempted_for: None,
         active_port_forwarding: None,
         pending_connect: None,
+        startup_connect: None,
+        status_attempted: false,
         secrets: None,
         tray: options.tray,
         tray_view: None,
         cwd: options.cwd,
         program: options.program,
         jobs: HashMap::new(),
-        next_id: 0,
     };
 
     let finished_flag = Arc::clone(&finished);
@@ -338,6 +344,12 @@ struct Engine {
     /// global — it has no per-connection settings — so a profile that wants a lease sets it first
     /// and the connect follows, both visible in the console.
     pending_connect: Option<ConnectTarget>,
+    /// A connect the config asked for at startup, parked until the first `status` reading of the
+    /// session says whether there is anything to do.
+    startup_connect: Option<ConnectTarget>,
+    /// Whether that first `status` attempt is behind us — however it ended, because "the CLI
+    /// could not be asked" is not a reason to stay parked forever.
+    status_attempted: bool,
     secrets: Option<Secrets>,
     tray: Option<Box<dyn TrayPresenter>>,
     tray_view: Option<TrayView>,
@@ -345,7 +357,6 @@ struct Engine {
     /// argv[0] for every child; `protonvpn` in production.
     program: String,
     jobs: HashMap<InvocationId, SubmittedJob>,
-    next_id: u64,
 }
 
 impl Engine {
@@ -442,6 +453,10 @@ impl Engine {
     fn handle(&mut self, request: Request) {
         match request {
             Request::Run(intent) => self.run_intent(intent),
+            Request::StartupConnect(target) => {
+                self.startup_connect = Some(target);
+                self.resolve_startup_connect();
+            }
             Request::SignIn {
                 username,
                 password,
@@ -554,6 +569,46 @@ impl Engine {
         self.submit(intent);
     }
 
+    /// The startup connect's gate.
+    ///
+    /// `connect` is not idempotent: against a live tunnel the CLI switches servers silently and the
+    /// egress moves under the user (`docs/cli-surface.md` §4.4). So the app's own
+    /// connect-at-startup waits for the first `status` reading and does nothing when that reading
+    /// already reports a connection. A human asking for a switch goes through [`Intent::Connect`]
+    /// and is always obeyed — the difference is who asked.
+    fn resolve_startup_connect(&mut self) {
+        // Nothing to decide yet: the answer is one `status` away, and guessing it either way would
+        // be inventing state (§5). Guessing "not connected" is exactly the bug this gate exists
+        // for; guessing "connected" would silently drop a setting the user turned on.
+        if !self.status_attempted {
+            return;
+        }
+        let Some(target) = self.startup_connect.take() else {
+            return;
+        };
+        let already = match &self.state.connection.value {
+            ConnectionStatus::Connected(info) => {
+                Some(format!("уже подключено: {}", info.describe()))
+            }
+            ConnectionStatus::Connecting => Some("подключение уже выполняется".to_string()),
+            _ => None,
+        };
+        match already {
+            // In the console, as a note: this is a decision we made, and it must never look like a
+            // command that ran (§10.4).
+            Some(why) => {
+                let started_at = SystemTime::now();
+                self.record_note(
+                    "connect при старте пропущен".to_string(),
+                    vec![why],
+                    started_at,
+                    Duration::ZERO,
+                );
+            }
+            None => self.run_intent(Intent::Connect(target)),
+        }
+    }
+
     /// Is a `config list` value known to be `on`? Unknown is not `on`: for a commitment we make
     /// on the user's behalf, the safe reading is "make sure".
     fn setting_is_on(&self, key: &str) -> bool {
@@ -598,9 +653,14 @@ impl Engine {
         self.publish_runner_status();
     }
 
+    /// The bus owns the id space, because the bus is what a job's record is keyed by: an id
+    /// allocated anywhere else would have to be reconciled with it later, and reconciliation is
+    /// where the ids got swapped.
     fn next_invocation_id(&mut self) -> InvocationId {
-        self.next_id += 1;
-        InvocationId(self.next_id)
+        self.bus
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .next_id()
     }
 
     /// A note invocation: something *we* did, shown verbatim and never as a `protonvpn` command
@@ -618,6 +678,7 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         bus.begin(
+            id,
             InvocationKind::Note,
             Vec::new(),
             Some(display),
@@ -674,6 +735,7 @@ impl Engine {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 bus.begin(
+                    id,
                     InvocationKind::ProtonVpn,
                     argv.clone(),
                     display.clone(),
@@ -782,13 +844,34 @@ impl Engine {
         }
     }
 
+    /// A finished (or unspawnable) `status` is what closes the question the startup connect is
+    /// waiting on. It is asked of the job table rather than of the interpreter's state because a
+    /// `status` that failed leaves the state `Unknown` — and `Unknown` still means the question was
+    /// asked and could not be answered, which is not a reason to sit on the user's setting.
+    fn note_status_attempted(&mut self, id: InvocationId) {
+        let is_status = self
+            .jobs
+            .get(&id)
+            .and_then(|job| interpreter::subcommand(&job.argv))
+            .is_some_and(|subcommand| subcommand == "status");
+        if is_status && !self.status_attempted {
+            self.status_attempted = true;
+            self.resolve_startup_connect();
+        }
+    }
+
     /// Post-invocation reactions: things a wrapper is expected to do, which are not themselves
     /// state.
     fn react_to(&mut self, event: &RunnerEvent, id: InvocationId) {
-        let RunnerEvent::Finished { exit_code, .. } = event else {
-            return;
+        let exit_code = match event {
+            RunnerEvent::Finished { exit_code, .. } => *exit_code,
+            RunnerEvent::SpawnFailed { .. } => {
+                self.note_status_attempted(id);
+                return;
+            }
+            _ => return,
         };
-        let exit_code = *exit_code;
+        self.note_status_attempted(id);
 
         let Some(job) = self.jobs.remove(&id) else {
             return;
@@ -1399,7 +1482,154 @@ esac
                 .map(|invocation| invocation.command_line())
                 .collect::<Vec<_>>()
         );
+        // Let go of the bus before asking the engine to stop: it takes that same lock to fold the
+        // events of the `info` child that is still running, so waiting for it while holding the
+        // lock is a deadlock with a five-second fuse. That is the fuse this test tripped on a
+        // loaded CI runner — and why every other test in this file drops the guard first.
+        drop(bus);
 
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    /// The bug this pins, measured against the real CLI: `connect` is **not** a no-op while a tunnel
+    /// is up — it switches servers silently and the egress moves under the user
+    /// (`docs/cli-surface.md` §4.4). A user who leaves the VPN connected and turns on "connect at
+    /// startup" was having their tunnel rebuilt on every launch, and the request is made before the
+    /// first `status` has answered, so the engine has to wait for that answer instead of assuming
+    /// "not connected".
+    #[test]
+    fn a_startup_connect_stands_down_when_the_cli_already_reports_a_connection() {
+        let dir = TempDir::new("startup-already-up");
+        // The stand-in reports a connection while this flag exists: the machine of a user who left
+        // the VPN up.
+        fs::write(dir.path().join("protonvpn.connected"), b"").unwrap();
+        let handle = start(&dir);
+
+        // Asked for immediately, as the view asks at startup, and asking for a lease on top: none
+        // of it may happen.
+        handle.send(Request::StartupConnect(ConnectTarget {
+            country: Some("NL".into()),
+            port_forwarding: true,
+            ..Default::default()
+        }));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut transcript = String::new();
+        while Instant::now() < deadline {
+            transcript = handle.bus().lock().unwrap().transcript();
+            if transcript.contains("connect при старте пропущен") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            transcript.contains("connect при старте пропущен"),
+            "the skip is recorded where the user can read it: {transcript}"
+        );
+        assert!(
+            transcript.contains("уже подключено: NL#818"),
+            "and it says what the CLI reported: {transcript}"
+        );
+
+        let bus = handle.bus();
+        let bus = bus.lock().unwrap();
+        let commands: Vec<String> = bus
+            .iter()
+            .filter(|invocation| invocation.kind.is_protonvpn())
+            .map(|invocation| invocation.command_line())
+            .collect();
+        assert!(
+            !commands
+                .iter()
+                .any(|line| line.ends_with("connect --country NL")),
+            "nothing was torn down: {commands:?}"
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|line| line.ends_with("config set port-forwarding on")),
+            "and the CLI's global preference was not flipped for a connect that never happens: \
+             {commands:?}"
+        );
+        // The decision is a note, never a command that never ran (§10.4).
+        assert!(
+            bus.iter().any(|invocation| !invocation.kind.is_protonvpn()
+                && invocation
+                    .command_line()
+                    .contains("connect при старте пропущен")),
+            "{:?}",
+            bus.iter()
+                .map(|invocation| (invocation.kind, invocation.command_line()))
+                .collect::<Vec<_>>()
+        );
+        drop(bus);
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    /// The other half of the gate: with nothing up, the setting still does what it says — and the
+    /// CLI is asked *before* it is asked for a tunnel.
+    #[test]
+    fn a_startup_connect_runs_when_the_cli_reports_nothing_is_up() {
+        let dir = TempDir::new("startup-nothing-up");
+        let handle = start(&dir);
+
+        handle.send(Request::StartupConnect(ConnectTarget::country("NL")));
+        wait_for(&handle, "a connection", |shared| {
+            shared.state.connection.value.is_connected()
+        });
+
+        let bus = handle.bus();
+        let bus = bus.lock().unwrap();
+        let commands: Vec<String> = bus
+            .iter()
+            .filter(|invocation| invocation.kind.is_protonvpn())
+            .map(|invocation| invocation.command_line())
+            .collect();
+        let status = commands.iter().position(|line| line.ends_with("status"));
+        let connect = commands
+            .iter()
+            .position(|line| line.ends_with("connect --country NL"));
+        assert!(status.is_some(), "{commands:?}");
+        assert!(connect.is_some(), "{commands:?}");
+        assert!(
+            status < connect,
+            "the CLI is asked what is there before we ask it for a tunnel: {commands:?}"
+        );
+        drop(bus);
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    /// The gate is on the app's own initiative, not on the command: a human asking for a switch
+    /// while a tunnel is up is obeyed, because that is what they asked for.
+    #[test]
+    fn a_manual_connect_is_still_obeyed_while_a_connection_is_up() {
+        let dir = TempDir::new("manual-switch");
+        fs::write(dir.path().join("protonvpn.connected"), b"").unwrap();
+        let handle = start(&dir);
+        wait_for(&handle, "the connection the CLI already had", |shared| {
+            shared.state.connection.value.is_connected()
+        });
+
+        handle.send(Request::Run(Intent::Connect(ConnectTarget::country("NL"))));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut seen = false;
+        while Instant::now() < deadline {
+            seen = handle
+                .bus()
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|invocation| invocation.command_line().ends_with("connect --country NL"));
+            if seen {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            seen,
+            "a manual connect must not be swallowed by the startup gate"
+        );
         assert!(handle.shutdown(Duration::from_secs(5)));
     }
 

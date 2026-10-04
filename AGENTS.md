@@ -182,7 +182,17 @@ which is the only way a Wayland desktop can give the window a name and an icon a
 (`docs/architecture.md` §12). Then an opt-in qBittorrent port push — the third sanctioned
 exception — was built and removed again: it never worked against a real client, and it is not
 worth a standing hole in the "only `protonvpn`" rule ([`docs/architecture.md`](docs/architecture.md)
-§0, §10.4).
+§0, §10.4). Then a bug from live use: with «Подключаться при запуске» on, the app re-issued
+`connect` on every start even when the CLI already reported a connection — and `connect` against a
+live tunnel switches servers silently (`docs/cli-surface.md` §4.4), so a working tunnel was being
+rebuilt on launch. The startup connect is now a *request* the engine holds until the session's
+first `status` answers, and stands down if it does
+([`docs/architecture.md`](docs/architecture.md) §11, rule 5); a manual Connect is untouched. That
+surfaced a second bug underneath: invocation ids were minted twice — by the engine for a job it had
+queued, by the log bus when the record opened — so anything recorded in between (a `curl` reading,
+a NAT-PMP renewal) could swap ids with a waiting command and file that command's output under the
+note, where the interpreter would read it as the note's; the bus now takes the id the engine
+reserved (§3).
 
 **Next:** a live `signin` run with real credentials (needs a human — the password prompt is
 captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; desktop

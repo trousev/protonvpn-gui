@@ -179,17 +179,31 @@ impl LogBus {
         }
     }
 
+    /// Reserves the next invocation id.
+    ///
+    /// The id is allocated when the caller *decides* to run something and handed to
+    /// [`LogBus::begin`] when the record is opened, because the two moments are not the same: a job
+    /// queued behind a running one has an id before it has a record. Letting `begin` allocate
+    /// instead gave the bus a second counter, and anything recorded in between — a `curl` reading,
+    /// a NAT-PMP renewal — took the queued job's number. The swap is not cosmetic: every later line
+    /// of that job is filed under the note, and the interpreter reads the note's output as the
+    /// command's.
+    pub fn next_id(&mut self) -> InvocationId {
+        let id = InvocationId(self.next_id);
+        self.next_id += 1;
+        id
+    }
+
     pub fn begin(
         &mut self,
+        id: InvocationId,
         kind: InvocationKind,
         argv: Vec<String>,
         display: Option<String>,
         cwd: PathBuf,
         at: SystemTime,
-    ) -> InvocationId {
+    ) {
         self.version += 1;
-        let id = InvocationId(self.next_id);
-        self.next_id += 1;
         self.invocations.push_back(Invocation {
             id,
             kind,
@@ -207,7 +221,6 @@ impl LogBus {
             self.invocations.pop_front();
             self.dropped_invocations += 1;
         }
-        id
     }
 
     /// Appends a line, applying the per-invocation cap.
@@ -311,7 +324,9 @@ mod tests {
     fn keeps_the_ring_buffer_bounded_and_counts_what_it_dropped() {
         let mut bus = bus();
         for n in 0..5 {
-            let id = bus.begin(
+            let id = bus.next_id();
+            bus.begin(
+                id,
                 InvocationKind::ProtonVpn,
                 vec!["protonvpn".into(), format!("cmd{n}")],
                 None,
@@ -330,7 +345,9 @@ mod tests {
     #[test]
     fn caps_lines_per_invocation_and_counts_them() {
         let mut bus = bus();
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::ProtonVpn,
             vec!["protonvpn".into(), "status".into()],
             None,
@@ -350,7 +367,9 @@ mod tests {
     #[test]
     fn invocation_records_exit_code_and_duration() {
         let mut bus = bus();
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::ProtonVpn,
             vec!["protonvpn".into(), "disconnect".into()],
             None,
@@ -369,7 +388,9 @@ mod tests {
     #[test]
     fn a_running_invocation_has_no_verdict_yet() {
         let mut bus = bus();
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::ProtonVpn,
             vec!["protonvpn".into(), "connect".into()],
             None,
@@ -387,7 +408,9 @@ mod tests {
     fn the_version_advances_on_every_change() {
         let mut bus = bus();
         let start = bus.version();
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::ProtonVpn,
             vec!["protonvpn".into(), "status".into()],
             None,
@@ -403,10 +426,47 @@ mod tests {
         assert!(bus.version() > after_line);
     }
 
+    /// Ids belong to the caller, so a record opened *later* than another still owns the number it
+    /// reserved first. This is the shape that used to break: a job is queued under one id,
+    /// something else is recorded before that job starts, and the two records swap — after which
+    /// every line of the job is filed under the note, and the interpreter reads the note's output
+    /// as the command's.
+    #[test]
+    fn a_queued_job_keeps_its_id_when_something_else_is_recorded_first() {
+        let mut bus = bus();
+        let queued = bus.next_id();
+        let note = bus.next_id();
+
+        bus.begin(
+            note,
+            InvocationKind::Note,
+            Vec::new(),
+            Some("NAT-PMP renew 39949".into()),
+            PathBuf::from("/tmp"),
+            SystemTime::now(),
+        );
+        bus.push_line(note, "аренда продлена", SystemTime::now());
+
+        bus.begin(
+            queued,
+            InvocationKind::ProtonVpn,
+            vec!["protonvpn".into(), "info".into()],
+            None,
+            PathBuf::from("/tmp"),
+            SystemTime::now(),
+        );
+        bus.push_line(queued, "Account: 'trousev'", SystemTime::now());
+
+        assert_eq!(bus.get(note).unwrap().output(), "аренда продлена\n");
+        assert_eq!(bus.get(queued).unwrap().output(), "Account: 'trousev'\n");
+    }
+
     #[test]
     fn notes_are_labelled_honestly_and_never_look_like_commands() {
         let mut bus = bus();
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::Note,
             Vec::new(),
             Some(

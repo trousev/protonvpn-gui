@@ -130,7 +130,9 @@ mod tests {
     fn bus_with_invocations(count: usize) -> LogBus {
         let mut bus = LogBus::default();
         for index in 0..count {
-            let id = bus.begin(
+            let id = bus.next_id();
+            bus.begin(
+                id,
                 InvocationKind::ProtonVpn,
                 vec!["protonvpn".into(), format!("cmd{index}")],
                 None,
@@ -146,7 +148,9 @@ mod tests {
     #[test]
     fn renders_command_output_and_footer_verbatim() {
         let mut bus = LogBus::default();
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::ProtonVpn,
             vec![
                 "protonvpn".into(),
@@ -184,7 +188,9 @@ mod tests {
     #[test]
     fn a_running_invocation_has_no_verdict_yet() {
         let mut bus = LogBus::default();
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::ProtonVpn,
             vec!["protonvpn".into(), "status".into()],
             None,
@@ -215,7 +221,9 @@ mod tests {
     fn reports_what_the_bus_discarded_instead_of_pretending() {
         let mut bus = LogBus::new(2, 100);
         for index in 0..5 {
-            let id = bus.begin(
+            let id = bus.next_id();
+            bus.begin(
+                id,
                 InvocationKind::ProtonVpn,
                 vec!["protonvpn".into(), format!("cmd{index}")],
                 None,
@@ -233,7 +241,9 @@ mod tests {
     #[test]
     fn hides_the_middle_of_an_oversized_invocation_and_says_so() {
         let mut bus = LogBus::new(10, 1000);
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::ProtonVpn,
             vec!["protonvpn".into(), "countries".into(), "list".into()],
             None,
@@ -269,7 +279,9 @@ mod tests {
         model.refresh(&bus);
         assert_eq!(model.version, version);
 
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::ProtonVpn,
             vec!["protonvpn".into(), "status".into()],
             None,
@@ -288,7 +300,9 @@ mod tests {
     #[test]
     fn notes_are_shown_as_notes_not_as_commands() {
         let mut bus = LogBus::default();
-        let id = bus.begin(
+        let id = bus.next_id();
+        bus.begin(
+            id,
             InvocationKind::Note,
             Vec::new(),
             Some(

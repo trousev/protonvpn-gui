@@ -114,6 +114,12 @@ so they can never disagree about what the CLI said.
 - Every entry carries: timestamp, the invocation it belongs to (argv), the stream (stdout/stderr),
   and the raw text **exactly as received**.
 - Raw text is never rewritten, reflowed, or re-parsed in place. Formatting happens at render time.
+- Invocation ids are allocated by the engine when it *decides* to run something, and handed to the
+  bus when the record opens — the two moments differ, because a job queued behind a running one has
+  an id before it has a record. `LogBus::begin` therefore takes an id instead of minting one:
+  with two counters, anything recorded while a job waited (a `curl` reading, a NAT-PMP renewal)
+  could take that job's number, after which the job's output was filed under the note and the
+  interpreter read the note's output as the command's.
 
 ---
 
@@ -211,6 +217,10 @@ This is what makes the design honest: the launcher's only claim is "I ran this c
 
 ## 7. Polling policy
 
+- **At startup, before anything else.** The first `status` of a session is also the reading the
+  startup connect waits on (§11): the app never asks for a tunnel before it knows what is already
+  there, and it makes the request before the answer arrives, so the request is held rather than
+  assumed.
 - **Idle cadence: no more often than once per 5 minutes.** At a measured ~1 s per `status` call
   this is a ~0.3% duty cycle — the cost objection disappears at this interval.
 - **Immediately after any invocation completes**, if that invocation could have changed
@@ -417,6 +427,15 @@ Rules the code enforces:
 4. **The app never invents a connection.** A selection that no longer resolves (a profile deleted
    by hand, an edited config) falls back to `connect`, and the status line says which connection
    that was.
+5. **A live tunnel is never touched on the app's own initiative.** `connect` is not idempotent —
+   against a live tunnel the CLI switches servers silently and the egress moves under the user
+   (`docs/cli-surface.md` §4.4). So "connect at startup" is a *request*, not a command: it waits
+   for the first `status` reading of the session and stands down when that reading already reports
+   a connection or one on its way, recording the decision in the console as a note (§10.4) rather
+   than as a command that ran. A human asking for a switch goes through `Intent::Connect` and is
+   always obeyed; the difference is who asked. Nothing is assumed while the answer is one `status`
+   away — assuming "not connected" is the bug, and assuming "connected" would silently drop a
+   setting the user turned on.
 
 The window itself is two pages and a console. **Overview** is status, the ground-truth probe and
 the connection list; **Settings** is `config list` grouped into tabs, plus the handful of settings

@@ -334,7 +334,8 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
                     app.config.connect_at_startup,
                     "Подключаться при запуске",
                     "Поднимает выбранное соединение сразу после старта — в том числе когда окна \
-                     нет и приложение живёт в трее.",
+                     нет и приложение живёт в трее. Если CLI уже сообщает о подключении, туннель \
+                     не трогаем: connect по живому подключению молча меняет сервер.",
                     AppToggle::ConnectAtStartup,
                 ),
                 widgets::muted(format!(
