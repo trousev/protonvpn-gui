@@ -1,33 +1,45 @@
 #!/usr/bin/env bash
+# Releases on demand. Nothing is published because `main` moved: the workflow has no `push`
+# trigger, and this script is how a release is asked for.
 #
-# Publishes a release: version `X.Y.N`, where
+#   scripts/release.sh                   # dispatch the release workflow on `main` (needs `gh`)
+#   scripts/release.sh --dry-run         # print the dispatch that would be sent, and stop
+#   scripts/release.sh --print-version   # print the tag a release right now would publish
+#
+# The dispatch is `gh workflow run`, so `gh` has to be installed and logged in (`gh auth login`)
+# and nothing else is needed — no token in the environment, no build on this machine. The version
+# is then the one the runner computes from `main`, which is the point: a local checkout is often
+# behind, and a preview that can be wrong is worse than no preview. `--print-version` prints that
+# preview anyway, from local tags and local commits, for when the number itself is the question.
+#
+# The packaging half lives in this file too, because the artifact a release publishes is exactly
+# what this script produces, and that path has to stay runnable locally and under `act`:
+#
+#   scripts/release.sh --local             # build, package, publish from here (needs GH_TOKEN)
+#   scripts/release.sh --local --dry-run   # build and package only, never publish
+#   scripts/release.sh --skip-build        # (implies --local) publish what is in target/release
+#   scripts/release.sh --appimage FILE     # (implies --local) attach an AppImage from
+#                                          # packaging/appimage/build.sh
+#
+# Either way the version is `X.Y.N`, where
 #
 #   * `X.Y` is the latest release tag in the repository (the line's base tag, e.g. `0.1`),
-#   * `N`   is the number of commits in `main`.
+#   * `N`   is the number of commits in the branch being released.
 #
 # The commit count rather than a hand-kept number, because a number someone has to remember is a
-# number that eventually lies. Every merge to `main` adds at least one commit, so every release
-# gets a version that is unique and larger than the previous one, and there is nothing to bump.
-#
-# It also builds and packages, so that the artifact attached to a release is exactly what this
-# script produced locally — and so that the whole path except the upload can be exercised without
-# a token (`--dry-run`, which is what `act` and a laptop use).
-#
-# Usage:
-#   scripts/release.sh                 # build, package, publish (needs GH_TOKEN)
-#   scripts/release.sh --dry-run       # build and package only, never publish
-#   scripts/release.sh --skip-build    # publish what is already in target/release
-#   scripts/release.sh --appimage FILE # attach an AppImage built by packaging/appimage/build.sh
-#   scripts/release.sh --print-version # print the tag that would be released, and stop
+# number that eventually lies. Every release therefore gets a version that is unique and larger
+# than the previous one, and there is nothing to bump — a release that waits for three merges
+# simply skips the numbers in between.
 #
 # The AppImage is an input, not something this script builds. It is produced by
 # `packaging/appimage/build.sh` in a job that cannot write to the repository and passed here, so
 # the one job allowed to publish never runs the third-party toolchain. A local release is:
 #
 #   packaging/appimage/build.sh
-#   scripts/release.sh --appimage target/appimage/ProtonVPN-GUI-$(uname -m).AppImage
+#   scripts/release.sh --local --appimage target/appimage/ProtonVPN-GUI-$(uname -m).AppImage
 #
-# Requirements: cargo, git, tar, sha256sum; `gh` only when publishing.
+# Requirements: `gh` (logged in) to dispatch; cargo, git, tar, sha256sum and `gh` for a local
+# release.
 
 set -euo pipefail
 
@@ -35,15 +47,19 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 DRY_RUN=0
+LOCAL=0
 SKIP_BUILD=0
 PRINT_VERSION=0
 APPIMAGE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run) DRY_RUN=1; shift ;;
-        --skip-build) SKIP_BUILD=1; shift ;;
-        --print-version) PRINT_VERSION=1; shift ;;
+        --local) LOCAL=1; shift ;;
+        # These two only mean something for a local release, so they select it rather than making
+        # the caller say `--local` as well.
+        --skip-build) LOCAL=1; SKIP_BUILD=1; shift ;;
         --appimage)
+            LOCAL=1
             APPIMAGE="${2:-}"
             if [[ -z "$APPIMAGE" ]]; then
                 echo "error: --appimage requires a path" >&2
@@ -51,7 +67,12 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
-        -h|--help) sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --print-version) PRINT_VERSION=1; shift ;;
+        -h|--help)
+            # The usage block is this file's own header, so there is one place to keep it right.
+            awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"
+            exit 0
+            ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -62,6 +83,8 @@ release_tags() {
     git tag --list | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V || true
 }
 
+# Computed for `--print-version` and for a local release. A dispatch does not use it: the version
+# there belongs to the runner, which is looking at `main` and not at this checkout.
 latest="$(release_tags | tail -1)"
 base="${latest:-0.1}"
 base="$(echo "$base" | cut -d. -f1,2)"
@@ -74,7 +97,54 @@ if [[ "$PRINT_VERSION" -eq 1 ]]; then
     exit 0
 fi
 
-echo "== release $tag =="
+if [[ "$LOCAL" -eq 0 ]]; then
+    # `gh workflow run` is the whole dispatch. It authenticates with the login `gh` already has,
+    # which is why there is no token to set here and no token to leak: the credentials never pass
+    # through this script or through the shell that started it.
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "error: gh not found — a release is dispatched with the GitHub CLI" >&2
+        exit 1
+    fi
+    if ! gh auth status >/dev/null 2>&1; then
+        echo "error: gh is not logged in — run 'gh auth login' first" >&2
+        exit 1
+    fi
+
+    echo "== dispatch =="
+    echo "   workflow: .github/workflows/release.yml on main"
+    echo "   command:  gh workflow run release.yml --ref main"
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        echo "   dry run: nothing was dispatched"
+        exit 0
+    fi
+
+    # Exactly one release line, always on `main`, never on the branch this happens to be run from:
+    # the ref is stated rather than left to the default, so a checkout on a feature branch cannot
+    # quietly release itself. The workflow file has to exist on `main` for this to find it, which
+    # is where it lives.
+    #
+    # `gh workflow run` prints the URL of the run it created, which is the only place that URL is
+    # known without asking the API and racing the run's appearance in it. Both streams are
+    # captured, because which one carries the URL is not part of gh's contract — and the same text
+    # is the error message when the dispatch is rejected.
+    if ! dispatched="$(gh workflow run release.yml --ref main 2>&1)"; then
+        echo "error: the dispatch was rejected — 'gh auth status' must show a token allowed to run workflows" >&2
+        printf '%s\n' "$dispatched" >&2
+        exit 1
+    fi
+    run_url="$(printf '%s\n' "$dispatched" | grep -Eo 'https://[^[:space:]]+/actions/runs/[0-9]+' | tail -1 || true)"
+
+    echo "   version:  decided by the runner, from main"
+    if [[ -n "$run_url" ]]; then
+        echo "   run:      $run_url"
+    else
+        echo "   runs:     https://github.com/$(gh repo view --json nameWithOwner --jq .nameWithOwner)/actions/workflows/release.yml"
+    fi
+    exit 0
+fi
+
+echo "== local release $tag =="
 echo "   base tag: $base (latest release tag: ${latest:-none})"
 echo "   commits in HEAD: $count"
 
@@ -173,8 +243,8 @@ fi
 echo
 echo "== publish =="
 if gh release view "$tag" >/dev/null 2>&1; then
-    # Re-running the same commit (a manual dispatch, a retried job) must not fail: upload over
-    # the existing assets instead of trying to create the release twice.
+    # Re-running the same commit (a retried job, a second dispatch for the same main) must not
+    # fail: upload over the existing assets instead of trying to create the release twice.
     echo "   релиз $tag уже существует — перезаписываю артефакты"
     gh release upload "$tag" "${assets[@]}" --clobber
 else
