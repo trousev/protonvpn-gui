@@ -4,6 +4,8 @@
 //!
 //! * it shows **connection status only** — `RunnerStatus` is deliberately absent, because the tray
 //!   answers "am I connected", not "what are you doing",
+//! * its icon is a shield in the status colour, struck through when there is no connection: at 22 px
+//!   a colour on its own is a weak signal, and "off" is the state most worth noticing,
 //! * it works with no window ever shown, which is why the engine lives in a GUI-free crate,
 //! * its menu offers connect/disconnect and show/quit,
 //! * and when there is no StatusNotifierItem host (GNOME without the AppIndicator extension), it
@@ -42,6 +44,15 @@ const SHOULDER: f32 = 0.30;
 const CORNER: f32 = 0.14;
 const TAPER_POW: f32 = 1.2;
 const TAPER_ROOT: f32 = 0.50;
+
+/// The cut that marks "no connection": a band through the middle of the box, this wide measured
+/// across it — about three of the twenty-two pixels, which is the narrowest that still reads as a
+/// slash rather than as a seam.
+const STRIKE_WIDTH: f32 = 0.15;
+
+/// Slope of that band, in screen coordinates: one is the 45° of a "no" sign, running from the top
+/// left to the bottom right.
+const STRIKE_SLOPE: f32 = 1.0;
 
 /// What the tray asks the window to do.
 ///
@@ -207,17 +218,35 @@ fn inside(x: f32, y: f32) -> bool {
     half_width(y).is_some_and(|half| (x - 0.5).abs() <= half)
 }
 
-/// The tray icon: a shield in the status colour, ARGB32 in network byte order.
+/// Is the point inside the cut that strikes the shield out? A band through the middle of the box,
+/// as wide across the shield as [`STRIKE_WIDTH`] says.
+fn on_the_strike(x: f32, y: f32) -> bool {
+    // Distance from the line `y − ½ = slope · (x − ½)`, rescaled from `|…|` to a perpendicular.
+    let signed = (y - 0.5 - STRIKE_SLOPE * (x - 0.5)).abs();
+    signed < STRIKE_WIDTH / 2.0 * (1.0 + STRIKE_SLOPE * STRIKE_SLOPE).sqrt()
+}
+
+/// Whether this status is drawn as a struck-out shield. Only "off" is: an error is not the same
+/// thing as the user having turned the tunnel off, and the two should not share a silhouette.
+fn struck_out(status: &ConnectionStatus) -> bool {
+    matches!(status, ConnectionStatus::Disconnected)
+}
+
+/// The tray icon: a shield in the status colour, struck through when there is no connection,
+/// ARGB32 in network byte order.
 ///
 /// A shield rather than the dot this used to be. The tray has exactly one question to answer — "am
 /// I covered" — and the silhouette says which question it is at a glance, while the colour says
-/// which answer it got. It stays a generated bitmap rather than a themed icon name: on a minimal
-/// desktop there may be no icon theme at all.
+/// which answer it got. The one answer worth more than a colour is "no": at 22 px on a panel whose
+/// background we do not control, red alone is easy to miss and easy to mistake for an amber
+/// "connecting", so "off" is also cut across. It stays a generated bitmap rather than a themed
+/// icon name: on a minimal desktop there may be no icon theme at all.
 fn status_icon(status: &ConnectionStatus) -> ksni::Icon {
     let (r, g, b) = status_rgb(status);
     let size = ICON_SIZE as usize;
     let samples = (SUBSAMPLES * SUBSAMPLES) as u32;
     let step = 1.0 / (SUBSAMPLES * size) as f32;
+    let struck = struck_out(status);
     let mut data = Vec::with_capacity(size * size * 4);
 
     for y in 0..size {
@@ -227,7 +256,8 @@ fn status_icon(status: &ConnectionStatus) -> ksni::Icon {
                 for sx in 0..SUBSAMPLES {
                     let px = (x * SUBSAMPLES + sx) as f32 * step + step / 2.0;
                     let py = (y * SUBSAMPLES + sy) as f32 * step + step / 2.0;
-                    hits += u32::from(inside(px, py));
+                    let painted = inside(px, py) && !(struck && on_the_strike(px, py));
+                    hits += u32::from(painted);
                 }
             }
             // Alpha is how much of the pixel the shield covers. The colour is flat, because the
@@ -244,13 +274,14 @@ fn status_icon(status: &ConnectionStatus) -> ksni::Icon {
 }
 
 /// Status colours, and the reason each one is what it is: green only when the CLI says connected,
-/// amber only while we are waiting for it to make up its mind, grey for "no idea" as opposed to
-/// "off" — the two are different, and the tray must not conflate them.
+/// amber only while we are waiting for it to make up its mind, red for "off" — the state worth
+/// noticing — and slate for "no idea yet", which is not the same as off and must not be painted as
+/// if it were. An error is red too, and is told apart from "off" by the cut, not by the shade.
 fn status_rgb(status: &ConnectionStatus) -> (u8, u8, u8) {
     match status {
         ConnectionStatus::Connected(_) => (76, 175, 80),
         ConnectionStatus::Connecting => (255, 179, 0),
-        ConnectionStatus::Disconnected => (158, 158, 158),
+        ConnectionStatus::Disconnected => (229, 57, 53),
         ConnectionStatus::Error(_) => (229, 57, 53),
         ConnectionStatus::Unknown => (96, 125, 139),
     }
@@ -270,9 +301,15 @@ mod tests {
         }
     }
 
+    /// The alpha channel, which is the silhouette on its own: the colour says which answer, the
+    /// shape says which question.
+    fn silhouette(icon: &ksni::Icon) -> Vec<u8> {
+        icon.data.iter().step_by(4).copied().collect()
+    }
+
     #[test]
     fn the_icon_is_a_square_argb_pixmap_of_the_expected_size() {
-        let icon = status_icon(&ConnectionStatus::Disconnected);
+        let icon = status_icon(&ConnectionStatus::Connected(Default::default()));
         assert_eq!(icon.width, ICON_SIZE);
         assert_eq!(icon.height, ICON_SIZE);
         assert_eq!(icon.data.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
@@ -294,7 +331,7 @@ mod tests {
 
     #[test]
     fn the_icon_is_a_shield_and_not_a_disc() {
-        let icon = status_icon(&ConnectionStatus::Disconnected);
+        let icon = status_icon(&ConnectionStatus::Connected(Default::default()));
         let size = ICON_SIZE as usize;
         let widths: Vec<usize> = (0..size)
             .filter_map(|row| painted_span(&icon, row).map(|(left, right)| right - left + 1))
@@ -332,16 +369,58 @@ mod tests {
         let connected = status_icon(&ConnectionStatus::Connected(Default::default()));
         let disconnected = status_icon(&ConnectionStatus::Disconnected);
         assert_ne!(connected.data, disconnected.data);
-        // Green, not grey.
+        // Green when the CLI says connected, red when it says there is nothing.
         assert_eq!(
             status_rgb(&ConnectionStatus::Connected(Default::default())),
             (76, 175, 80)
         );
-        assert_eq!(status_rgb(&ConnectionStatus::Disconnected), (158, 158, 158));
-        // Same silhouette either way, because only the answer differs: a status that changed the
-        // shape too would be two things to read instead of one.
-        let alpha = |icon: &ksni::Icon| icon.data.iter().step_by(4).copied().collect::<Vec<u8>>();
-        assert_eq!(alpha(&connected), alpha(&disconnected));
+        assert_eq!(status_rgb(&ConnectionStatus::Disconnected), (229, 57, 53));
+    }
+
+    #[test]
+    fn no_connection_is_struck_through_and_nothing_else_is() {
+        let size = ICON_SIZE as usize;
+        let whole = silhouette(&status_icon(&ConnectionStatus::Connected(
+            Default::default(),
+        )));
+        let cut = silhouette(&status_icon(&ConnectionStatus::Disconnected));
+
+        // The cut only takes pixels away, and only from the diagonal band: a strike-through, not a
+        // second shape. The band is `STRIKE_WIDTH / √2` either side of the diagonal in `x − y`,
+        // plus the pixel and a half that the soft edge can spill into.
+        let spill = STRIKE_WIDTH / std::f32::consts::SQRT_2 + 1.5 / size as f32;
+        let mut removed = 0;
+        for y in 0..size {
+            for x in 0..size {
+                let at = y * size + x;
+                assert!(cut[at] <= whole[at], "the cut added a pixel at ({x}, {y})");
+                if cut[at] < whole[at] {
+                    removed += 1;
+                    let (fx, fy) = (
+                        (x as f32 + 0.5) / size as f32,
+                        (y as f32 + 0.5) / size as f32,
+                    );
+                    assert!(
+                        (fx - fy).abs() <= spill,
+                        "took ({x}, {y}), which is off the band"
+                    );
+                }
+            }
+        }
+        assert!(
+            removed > size,
+            "removed only {removed} pixels: not a strike-through"
+        );
+
+        // Every other status keeps the whole shield, the error included: "off" is the only state
+        // that is ours to cut out, and an error is not the same thing as the tunnel being down.
+        for status in [
+            ConnectionStatus::Connecting,
+            ConnectionStatus::Error("отказано".into()),
+            ConnectionStatus::Unknown,
+        ] {
+            assert_eq!(silhouette(&status_icon(&status)), whole, "{status:?}");
+        }
     }
 
     #[test]
