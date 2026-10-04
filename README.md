@@ -11,22 +11,31 @@ It is a wrapper and it does not pretend otherwise.
 ## Download
 
 Every merge to `main` publishes a release, so the newest build is always on the
-[releases page](https://github.com/trousev/protonvpn-gui/releases/latest):
+[releases page](https://github.com/trousev/protonvpn-gui/releases/latest). Two assets are attached
+to each release:
+
+**AppImage** — nothing to install:
 
 ```sh
-# the asset is attached to every release
+chmod +x ProtonVPN-GUI-x86_64.AppImage
+./ProtonVPN-GUI-x86_64.AppImage
+```
+
+**Tarball** — the same binary, plus the `.desktop` entry, icon, README and LICENSE:
+
+```sh
 tar -xzf protonvpn-gui-<version>-x86_64-linux.tar.gz
 sudo install -m755 protonvpn-gui-<version>-x86_64-linux/protonvpn-gui /usr/local/bin/
 ```
 
-The tarball contains the binary, the `.desktop` entry, the icon, the README and the LICENSE. The
-`protonvpn` CLI itself is **not** included — it is a system dependency (see Requirements).
+Neither archive contains the `protonvpn` CLI: it is a system dependency (see Requirements), and
+the AppImage calls it from `PATH` like the installed binary does.
 
-Downloads can be verified rather than trusted:
+Downloads can be verified rather than trusted — `SHA256SUMS` covers both assets:
 
 ```sh
 sha256sum -c SHA256SUMS
-gh attestation verify protonvpn-gui-<version>-x86_64-linux.tar.gz --repo trousev/protonvpn-gui
+gh attestation verify <the-asset> --repo trousev/protonvpn-gui
 ```
 
 The attestation is signed proof that the artifact came out of this repository's release workflow,
@@ -134,16 +143,18 @@ applies, and `.github/dependabot.yml` for how the pinned dependencies get update
 
 ## Packaging
 
-AppImage only — Flatpak was dropped deliberately, because the sandbox would fight both the host
+AppImage first — Flatpak was dropped deliberately, because the sandbox would fight both the host
 `protonvpn` CLI and tray-name ownership for no benefit a wrapper needs. See
 [`packaging/appimage/build.sh`](packaging/appimage/build.sh).
 
-The release job ships a **tarball**, not an AppImage, and that is a deliberate trade: building an
-AppImage means downloading `linuxdeploy` and `appimagetool` — third-party binaries, historically
-referenced by a moving `continuous` tag — into a job that holds `contents: write`. For a project
-whose rule is "one program, and we know exactly which", a tarball built by `scripts/release.sh` from
-a pinned toolchain is the smaller risk. Run `packaging/appimage/build.sh` locally if you want the
-AppImage.
+The release job builds the AppImage in a job that can only **read**, then publishes it from the job
+that may write. The toolchain — `linuxdeploy` and the output plugin that carries `appimagetool` —
+and the AppImage runtime are pinned by version and checked against a SHA-256 before they run, so a
+build neither trusts a moving `continuous` tag nor executes unverified bytes. The third-party
+toolchain never runs in the job that holds `contents: write`.
+
+The tarball is still attached as the plain fallback, and `packaging/appimage/build.sh` is the whole
+AppImage path on its own.
 
 ## Honest limitations
 
@@ -173,6 +184,10 @@ AppImage.
   `scripts/check-linux-deps.sh` fails the build if one of them would be, or if the graph grows past
   the number recorded in the script — adding a dependency should be an edit someone reviewed, not a
   side effect.
+- **The AppImage inherits the build runner's glibc floor (currently 2.39).** It is assembled on
+  `ubuntu-24.04`, the same image CI uses, so it will not start on an older distribution even though
+  nothing else in the bundle would prevent it. Moving the AppImage job — not the publish job — to
+  an older runner is the change that fixes that, and it is deliberate when it happens.
 
 ## Layout
 

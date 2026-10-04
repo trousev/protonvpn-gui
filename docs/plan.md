@@ -208,14 +208,16 @@ readable and copyable.
 > the *selected profile*, and a profile that wants one sets the CLI's single global preference
 > before connecting, in the open.
 
-### Phase 3 — Packaging — **partly done**
+### Phase 3 — Packaging — **done**
 
 > Releases are automatic: every merge to `main` publishes `X.Y.N` (see `scripts/release.sh` and
-> `.github/workflows/release.yml`) with a tarball, a `SHA256SUMS` and a build-provenance
-> attestation. The AppImage script is kept and works, but CI deliberately does not run it: it
-> downloads `linuxdeploy`/`appimagetool` from a moving `continuous` tag into a job that can write
-> to the repository, and that is a bigger risk than the convenience is worth. The `.desktop`,
-> icon and `StartupWMClass` are shipped in the tarball either way.
+> `.github/workflows/release.yml`) with an AppImage, a tarball, a `SHA256SUMS` and a
+> build-provenance attestation for each. The AppImage is assembled in a job that can only **read**
+> — `packaging/appimage/build.sh` pins `linuxdeploy`, the output plugin that carries
+> `appimagetool`, and the AppImage runtime by version, and verifies each by SHA-256 before running
+> it — and the publish job only attaches the artifact it is handed. No third-party toolchain ever
+> runs in the job that holds `contents: write`. The `.desktop`, icon and `StartupWMClass` are
+> shipped in both assets.
 
 ### Phase 3 (original notes)
 
