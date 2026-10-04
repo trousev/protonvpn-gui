@@ -218,7 +218,11 @@ readable and copyable.
 > `appimagetool`, and the AppImage runtime by version, and verifies each by SHA-256 before running
 > it — and the publish job only attaches the artifact it is handed. No third-party toolchain ever
 > runs in the job that holds `contents: write`. The `.desktop`, icon and `StartupWMClass` are
-> shipped in both assets.
+> shipped in both assets. The app also installs that entry and the icon into
+> `~/.local/share/{applications,icons/hicolor}` on start — Wayland has no window icons, so a
+> `.desktop` file is the only thing that can name the window or draw its icon
+> ([`architecture.md`](architecture.md) §12) — and the GUI runs on iced 0.14, which no longer
+> leaves a ghost "winit window" in Alt+Tab (§12.1).
 
 ### Phase 3 (original notes)
 

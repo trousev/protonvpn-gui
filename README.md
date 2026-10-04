@@ -31,6 +31,13 @@ sudo install -m755 protonvpn-gui-<version>-x86_64-linux/protonvpn-gui /usr/local
 Neither archive contains the `protonvpn` CLI: it is a system dependency (see Requirements), and
 the AppImage calls it from `PATH` like the installed binary does.
 
+On the first start the app writes its own menu entry — `~/.local/share/applications/protonvpn-gui.desktop`
+— and its icon into the hicolor theme. That is not decoration: Wayland has no window icons at all,
+and a desktop learns a window's name and icon only from a `.desktop` file whose name matches the
+window's app id. Without it GNOME shows the window as «Неизвестное приложение» under a generic
+gear. It is a setting (`Ярлык в меню приложений`, on by default), and turning it off removes both
+files.
+
 Downloads can be verified rather than trusted — `SHA256SUMS` covers both assets:
 
 ```sh
@@ -116,8 +123,9 @@ Everything the app itself owns lives in one file:
 ~/.config/protonvpn-gui/config.json
 ```
 
-It holds the app's own preferences (connect on start, start minimized, autostart, the egress
-probe, the port-forwarding lease, and the qBittorrent host/port/user). Two deliberate omissions:
+It holds the app's own preferences (connect on start, start minimized, autostart, the app-menu
+entry, the egress probe, the port-forwarding lease, and the qBittorrent host/port/user). Two
+deliberate omissions:
 
 - **Proton's own `settings.json` and `app-config.json` are never read or written.** Those belong
   to the official app; the CLI settings are read through `protonvpn config list` like any other
@@ -125,6 +133,9 @@ probe, the port-forwarding lease, and the qBittorrent host/port/user). Two delib
 - **The qBittorrent password is never written to disk.** It lives in memory for the session only.
 
 Autostart is a plain `~/.config/autostart/protonvpn-gui.desktop`, written only when you ask for it.
+The application entry and its icon live in `~/.local/share/{applications,icons/hicolor}` and are
+kept in step with the setting described above; [`docs/architecture.md`](docs/architecture.md) §12
+is the contract for all three files.
 
 ## Contributing
 
@@ -182,9 +193,9 @@ someone to mean it.
   and not an `iced::application`: an application exits when its last window is destroyed.
 - **Desktop notifications are not implemented.** They would need either another program or the
   session bus beyond the tray, and neither is sanctioned yet. A human decision, not an oversight.
-- **The window costs about two hundred crates, and that is where they all are.** The wrapper
-  itself — `protonvpn-core`: PTY runner, interpreter, launcher, poller, probe, NAT-PMP, qBittorrent
-  — is 26. The rest is `iced`, and under it `winit`, `softbuffer` and the tray's `zbus`. `Cargo.lock`
+- **The window costs 195 crates, and that is where they all are.** The wrapper itself —
+  `protonvpn-core`: PTY runner, interpreter, launcher, poller, probe, NAT-PMP, qBittorrent — is 26.
+  The rest is `iced` 0.14, and under it `winit`, `softbuffer` and the tray's `zbus`. `Cargo.lock`
   also lists Android, Windows and macOS crates, because that is what `winit` declares and a lock
   file is a union over every target; none of them is compiled here. This is a Linux-only tool, and
   `scripts/check-linux-deps.sh` fails the build if one of them would be, or if the graph grows past
@@ -209,7 +220,7 @@ crates/protonvpn-core/     all VPN logic, no UI dependency (the tray must work h
   net/natpmp.rs            the port-forwarding lease (exception #2)
   qbittorrent.rs           the opt-in local push (exception #3)
   engine.rs                the one thread that owns state
-crates/protonvpn-gui/      views only: window, console pane, tray, autostart
+crates/protonvpn-gui/      views only: window, console pane, tray, the .desktop entries
 ```
 
 The design contract is [`docs/architecture.md`](docs/architecture.md); it wins over everything

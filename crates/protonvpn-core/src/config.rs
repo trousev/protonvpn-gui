@@ -46,6 +46,14 @@ pub struct Config {
     pub start_minimized: bool,
     /// Keep `~/.config/autostart/protonvpn-gui.desktop` in sync with `autostart`.
     pub autostart: bool,
+    /// Keep `~/.local/share/applications/protonvpn-gui.desktop` and its icon in sync with this
+    /// setting.
+    ///
+    /// On by default, because it is not decoration: Wayland has no window icons, and a compositor
+    /// learns a window's name and icon by matching its app id against a `.desktop` file. Without
+    /// one, GNOME shows the window as an unknown application under a generic gear
+    /// (`docs/architecture.md` §12).
+    pub desktop_entry: bool,
     pub probe_enabled: bool,
     /// Where the app writes user-created connections. Everything about a connection — the
     /// country, the city, P2P / Secure Core / Tor and whether we maintain a port-forwarding
@@ -64,6 +72,7 @@ impl Default for Config {
             connect_at_startup: false,
             start_minimized: false,
             autostart: false,
+            desktop_entry: true,
             probe_enabled: true,
             connections: Vec::new(),
             selected_connection: Some(SYSTEM_FASTEST.to_string()),
@@ -301,6 +310,7 @@ mod tests {
             connect_at_startup: true,
             start_minimized: true,
             autostart: true,
+            desktop_entry: false,
             probe_enabled: false,
             connections: vec![SavedConnection {
                 id: "work".into(),

@@ -23,10 +23,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# The Linux closure as of the change that introduced this script: 218 crates, 23 of them removed
-# by dropping iced's unused `auto-detect-theme`. Raise this only with the reason in the commit
-# message.
-MAX_CRATES=218
+# The Linux closure: 195 crates as of the iced 0.14 upgrade. That upgrade dropped 29 crates —
+# among them `png` with `flate2`/`miniz_oxide`, `palette`, `rayon` and the `drm` family — and added
+# 6 (`harfrust`, `core_maths`, `iced_debug`, `iced_program`, `lilt`,
+# `linebender_resource_handle`); iced's unused `advanced` feature is off as well. Raise this only
+# with the reason in the commit message.
+MAX_CRATES=195
 
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 if [[ -z "$HOST_TRIPLE" ]]; then

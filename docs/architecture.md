@@ -437,3 +437,54 @@ be done until `protonvpn info` names an account.
 The console stays pinned under both pages, collapsed to one line: runner status, connection
 status, and the age of that knowledge (§7). It is still the product.
 
+
+---
+
+## 12. The desktop knows us by a `.desktop` file
+
+Wayland has no window icons. There is no `_NET_WM_ICON` to set, `winit`'s `set_visible` is a
+no-op for the same reason, and a compositor learns what a window *is* by matching its app id (X11:
+`WM_CLASS`) against the basename of a `.desktop` file. With no file to match, GNOME builds a
+window-backed application around the window and shows it as «Неизвестное приложение» under the
+generic `application-x-executable` icon — the gear. The entry is therefore not branding
+decoration: it is the only way the window can have a name and an icon at all.
+
+Three files, all ours, all written where a desktop actually searches:
+
+| File | What it is |
+|---|---|
+| `~/.local/share/applications/protonvpn-gui.desktop` | the application: `Name`, `Icon`, `Categories`, `StartupWMClass` |
+| `~/.local/share/icons/hicolor/256x256/apps/protonvpn-gui.png` | the icon `Icon=` names — a file next to the binary is invisible to the shell |
+| `~/.config/autostart/protonvpn-gui.desktop` | autostart: the same entry plus `X-GNOME-Autostart-enabled=true` |
+
+Rules:
+
+1. **The app id is `protonvpn-gui`.** The entry's basename, its `StartupWMClass`, the Wayland
+   `application_id` and the icon name all say the same thing, and that is what makes the match
+   possible. It must never be `proton.vpn.app.gtk`: the CLI refuses to run while that name is on
+   the session bus (§0, `cli-surface.md` §2).
+2. **`Exec=` is the running program, spelled properly.** From an AppImage that is the image's own
+   path (`$APPIMAGE`), not the temporary mount it was unpacked into — that mount is gone by the
+   next login. Paths are quoted by the `Exec` key's own rules, which are not shell rules, and a
+   literal `%` is doubled.
+3. **The config decides, every start re-asserts it.** `desktop_entry` is on by default, because
+   the entry is what makes the window legible at all; turning it off in Settings removes both
+   files and they stay gone. The same shape as autostart, for the same reason: a user who deletes
+   the file should not be surprised by it coming back unasked.
+4. **One template, checked.** `packaging/protonvpn-gui.desktop` is what the AppImage ships and
+   `desktop::entry()` is what the app installs; a test compares every key but `Exec`, so the menu
+   entry and the window cannot end up branded differently.
+
+### 12.1 Why iced is pinned at 0.14 and not 0.13
+
+iced 0.13 left a ghost window behind on Wayland. `iced_winit` created a throwaway window with
+winit's default title — «winit window» — just to bring the compositor up, and the `tiny-skia`
+compositor kept that window alive for the life of the process inside a `softbuffer::Context`.
+Wayland cannot hide a window, so mutter gave it a `MetaWindow`: an entry in Alt+Tab and a second
+dot in the dock, for a window nobody could see. Measured before the upgrade: a tray-only start —
+no window of ours at all — still added one Wayland surface, and it went away with the process.
+
+iced 0.14 initializes the compositor lazily on the first real window instead (`iced-rs/iced#2722`,
+"…and get rid of the ghost boot window"), so there is nothing left to hide. Do not go back: the
+upgrade also took 29 crates out of the Linux closure — `png` with `flate2` and `miniz_oxide`,
+`palette`, `rayon`, the `drm` family — and added 6.

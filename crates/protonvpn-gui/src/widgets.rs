@@ -89,16 +89,20 @@ pub fn badge<'a, M: 'a>(value: impl Into<String>, tone: Tone) -> Element<'a, M> 
 
 /// A coloured dot, for a status chip.
 pub fn dot<'a, M: 'a>(color: iced::Color) -> Element<'a, M> {
-    container(Space::new(Length::Fixed(8.0), Length::Fixed(8.0)))
-        .style(move |_: &Theme| container::Style {
-            background: Some(iced::Background::Color(color)),
-            border: iced::Border {
-                radius: 4.0.into(),
-                ..Default::default()
-            },
-            ..container::Style::default()
-        })
-        .into()
+    container(
+        Space::new()
+            .width(Length::Fixed(8.0))
+            .height(Length::Fixed(8.0)),
+    )
+    .style(move |_: &Theme| container::Style {
+        background: Some(iced::Background::Color(color)),
+        border: iced::Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        ..container::Style::default()
+    })
+    .into()
 }
 
 /// A status chip: `● Отключено`. The dot and the words share the tone; the words themselves are
@@ -171,7 +175,7 @@ pub fn fact_row<'a, M: 'a>(label: &'a str, value: impl Into<String>) -> Element<
 
 /// The dashed separator GitHub-style lists use between facts.
 pub fn separator<'a, M: 'a>() -> Element<'a, M> {
-    container(Space::new(Length::Fill, Length::Fixed(1.0)))
+    container(Space::new().width(Length::Fill).height(Length::Fixed(1.0)))
         .style(|_: &Theme| container::Style {
             background: Some(iced::Background::Color(theme::BORDER)),
             ..container::Style::default()

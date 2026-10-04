@@ -53,7 +53,8 @@ pub(crate) fn view<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a
                 EditorFlag::Tor => editor.tor,
                 EditorFlag::PortForwarding => editor.port_forwarding,
             };
-            checkbox(flag.label(), checked)
+            checkbox(checked)
+                .label(flag.label())
                 .text_size(13)
                 .on_toggle(move |value| Message::EditorFlag(*flag, value))
                 .into()
@@ -102,7 +103,9 @@ pub(crate) fn view<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a
 
     let footer = row![
         preview,
-        Space::new(Length::Fixed(12.0), Length::Fixed(1.0)),
+        Space::new()
+            .width(Length::Fixed(12.0))
+            .height(Length::Fixed(1.0)),
         buttons,
     ]
     .align_y(Alignment::Center)

@@ -77,7 +77,7 @@ fn status_card(app: &App) -> Element<'_, Message> {
 
     let head = row![
         widgets::status_chip(status_tone(status), status.label()),
-        Space::new(Length::Fill, Length::Fixed(1.0)),
+        Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
         action,
     ]
     .align_y(Alignment::Center);
@@ -167,7 +167,7 @@ fn egress_card(app: &App) -> Element<'_, Message> {
 
     let head = row![
         widgets::eyebrow("Проба egress · ground truth"),
-        Space::new(Length::Fill, Length::Fixed(1.0)),
+        Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
         verdict,
         button(text("Измерить").size(12))
             .padding(Padding::from([4, 10]))
@@ -236,7 +236,7 @@ fn egress_card(app: &App) -> Element<'_, Message> {
 fn connections_card(app: &App) -> Element<'_, Message> {
     let head = row![
         widgets::eyebrow("Соединения"),
-        Space::new(Length::Fill, Length::Fixed(1.0)),
+        Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
         button(text("Добавить соединение").size(13))
             .padding(Padding::from([7, 12]))
             .style(theme::outlined(theme::BORDER, theme::TEXT))
@@ -347,7 +347,7 @@ fn saved_row<'a>(app: &'a App, saved: &'a SavedConnection) -> Element<'a, Messag
         .align_y(Alignment::Center),
         row![
             badges,
-            Space::new(Length::Fill, Length::Fixed(1.0)),
+            Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
             button(text("Изменить").size(12))
                 .padding(Padding::from([4, 8]))
                 .style(theme::ghost(theme::TEXT_MUTED, false))
@@ -413,7 +413,7 @@ fn port_card(app: &App) -> Element<'_, Message> {
 
     let head = row![
         widgets::eyebrow("Порт-форвардинг"),
-        Space::new(Length::Fill, Length::Fixed(1.0)),
+        Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
         widgets::faint(status_text),
     ]
     .align_y(Alignment::Center);

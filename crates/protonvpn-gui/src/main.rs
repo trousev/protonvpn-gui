@@ -6,8 +6,8 @@
 //! is the product and the only program we run is `protonvpn`.
 
 mod app;
-mod autostart;
 mod console;
+mod desktop;
 mod theme;
 mod tray;
 mod widgets;
