@@ -62,6 +62,9 @@ release was asked for.
 - Login and logout, including the password and 2FA prompts, which are answered over a PTY.
 - **Port forwarding**, which the official CLI cannot do on its own: the lease is renewed from our
   own NAT-PMP client, and the port is shown with a copy button.
+- **A local SOCKS5 proxy for the paranoid case**, also off by default: point an application at
+  `127.0.0.1:1080` and it gets the system's internet while the tunnel is up — and a refusal, not a
+  leak, the moment the tunnel is gone. See [The SOCKS5 door](#the-socks5-door).
 - A tray icon that works with no window at all, and an autostart entry.
 
 ## The rules it follows
@@ -76,16 +79,52 @@ Two rules shape the whole design, and they are the reason the code looks the way
    duration, raw output — and shown in a collapsible pane. Both the state interpreter and the
    console read that one stream, so they can never disagree about what the CLI said.
 
-Two exceptions are sanctioned and bounded, each because the CLI genuinely cannot do the job:
+Three exceptions are sanctioned and bounded, each because the CLI genuinely cannot do the job:
 
 | Exception | Why | Bounds |
 |---|---|---|
 | `curl` to an IP-echo service | the CLI's own `Your new IP address is …` is not the egress address (measured: it printed `149.88.27.213` while real egress was `149.22.89.89`) | read-only, third party, keyless |
 | NAT-PMP to `10.2.0.1:5351` | the port-forwarding lease; the CLI only sets a preference and tells you to run a script | IANA-standard port, publicly documented gateway, opcode-0 probe first, degrades honestly |
+| a local SOCKS5 listener, plus the kernel's own routing answer behind it | an application that must never reach the network without the VPN has nothing to hold on to otherwise | **off by default**, loopback (`127.0.0.0/8`) only, IPv4 + `CONNECT` only, fails closed |
 
-A third was built and withdrawn: pushing the forwarded port into a local qBittorrent over its Web
+An earlier exception was built and withdrawn: pushing the forwarded port into a local qBittorrent over its Web
 API. It never worked against a real client, and convenience for one torrent client is not worth a
 standing hole in the rule above — the port is displayed and copyable instead.
+
+## The SOCKS5 door
+
+The paranoid case, off by default in **Настройки → Прокси**: an application that must never reach
+the network without the VPN gets pointed at `127.0.0.1:1080` in its own settings, and this
+application makes sure that door is either open onto the tunnel or shut.
+
+- **While the tunnel is up**, the proxy relays. Domain names are resolved at the proxy and only
+  after the gate says yes, so the application's own configuration never leaks the name; the lookup
+  itself is the machine's, through the system resolver, exactly as it would be without a proxy.
+- **The moment it is not**, every new connection is refused with a SOCKS5 "not allowed by
+  ruleset", and every connection already being relayed is dropped.
+- **The check is the kernel's own answer**, not a `status` poll: "which source address would an
+  off-link packet use?" — four syscalls, no packets, no third party. A new connection is refused
+  immediately if the answer moved, and what is already relaying is dropped within about a quarter
+  of a second.
+- **Every 30 seconds** (configurable, `0` turns it off) the same `curl` egress check the Overview
+  page uses confirms that traffic is really going somewhere else. If the egress address is the
+  pre-connection one again, the door shuts, whatever `protonvpn` says. This one needs the egress
+  probe itself to be on (Настройки → Опрос); with it off, only the local route check remains.
+
+Two things to know before turning it on, both deliberate:
+
+- **It arms on evidence.** The gate opens only when the kernel's route differs from a route
+  observed while the CLI said the tunnel was down. If you enable the proxy while the VPN is
+  already connected, the app has never seen the other route, so the proxy stays shut and says so
+  — reconnect once (Отключить, then Подключиться) and it arms. The same holds after the door shuts
+  itself: a gate closed on suspicion never reopens on a different route alone.
+- **It is IPv4, `CONNECT` and loopback only, with no authentication.** An IPv6 literal is refused
+  rather than guessed at; there is no `BIND` or `UDP ASSOCIATE`; and the listener cannot leave the
+  loopback range, whatever the config file says. That is the same promise `ssh -D` makes — which
+  also means any local process can use the door while it is open.
+- **Local-network destinations are refused** while the door is open: everything but a loopback
+  address must come from the tunnel's own source address, so a router or a NAS is not reachable
+  through the proxy. It relays to the internet through the tunnel, not onto your LAN.
 
 ## Requirements
 
@@ -125,7 +164,8 @@ Everything the app itself owns lives in one file:
 ```
 
 It holds the app's own preferences (connect on start, start minimized, autostart, the app-menu
-entry, the egress probe, the port-forwarding lease) and the connections you build. There are no
+entry, the egress probe, the port-forwarding lease, and the SOCKS5 address, port and verification
+interval) and the connections you build. There are no
 secrets in it:
 
 - **Proton's own `settings.json` and `app-config.json` are never read or written.** Those belong
@@ -193,6 +233,14 @@ someone to mean it.
   Wayland at all (`set_visible` is a no-op there), so "close to tray" is implemented by destroying
   the window and opening a new one from the tray. That is also why the app is an `iced::daemon`
   and not an `iced::application`: an application exits when its last window is destroyed.
+- **The SOCKS5 proxy is a door, not a firewall.** It relays one application's traffic while the
+  tunnel is proven and refuses when it is not; it does not stop the application from ignoring its
+  proxy setting, and while the door is open any local process can use it. Its blind spot is the
+  source address it pins: a route change that keeps the same source address is invisible to it,
+  and between the route check and the connect sit the name lookup and the dial — up to ten
+  seconds in which a route that moves can expose the destination and your real address, though no
+  application byte. All of it is in `docs/architecture.md` §13.2. Turn on the CLI's own kill
+  switch if you want the network itself to be unforgiving.
 - **Desktop notifications are not implemented.** They would need either another program or the
   session bus beyond the tray, and neither is sanctioned yet. A human decision, not an oversight.
 - **The window costs 195 crates, and that is where they all are.** The wrapper itself —
@@ -220,6 +268,8 @@ crates/protonvpn-core/     all VPN logic, no UI dependency (the tray must work h
   poll.rs                  five-minute idle cadence, immediate after a change, attention-driven
   probe.rs                 the `curl` ground-truth probe (exception #1)
   net/natpmp.rs            the port-forwarding lease (exception #2)
+  socks5.rs                the local SOCKS5 proxy (exception #3)
+  net/route.rs             the kernel's routing answer the proxy's gate reads
   engine.rs                the one thread that owns state
 crates/protonvpn-gui/      views only: window, console pane, tray, the .desktop entries
 ```

@@ -36,6 +36,7 @@ pub mod poll;
 pub mod probe;
 pub mod pty;
 pub mod runner;
+pub mod socks5;
 
 pub use engine::{EngineHandle, EngineOptions, Request, TrayPresenter, TrayView};
 pub use launcher::Intent;

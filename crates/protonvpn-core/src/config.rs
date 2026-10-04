@@ -73,6 +73,12 @@ pub struct Config {
     /// Which connection the "Подключиться" button and the tray menu use. One namespace:
     /// [`SYSTEM_FASTEST`] and friends, or the `id` of a [`SavedConnection`].
     pub selected_connection: Option<String>,
+    /// The local SOCKS5 proxy — sanctioned exception #3 (`docs/architecture.md` §13).
+    ///
+    /// **Off by default**, loopback only, and it refuses to relay anything while the tunnel is not
+    /// proven: it is an option for applications that must never touch the network without the VPN,
+    /// not a service the application starts on everyone's behalf.
+    pub socks5: Socks5,
 }
 
 /// The selection used when the file does not mention one.
@@ -95,6 +101,7 @@ impl Default for Config {
             probe_enabled: true,
             connections: Vec::new(),
             selected_connection: default_selected_connection(),
+            socks5: Socks5::default(),
         }
     }
 }
@@ -121,6 +128,7 @@ struct Wire {
     /// statement as "the fastest preset".
     #[serde(default = "default_selected_connection")]
     selected_connection: Option<String>,
+    socks5: Socks5,
 }
 
 impl From<Wire> for Config {
@@ -133,6 +141,7 @@ impl From<Wire> for Config {
             probe_enabled: wire.probe_enabled,
             connections: wire.connections,
             selected_connection: wire.selected_connection,
+            socks5: wire.socks5,
         }
     }
 }
@@ -147,6 +156,7 @@ impl From<&Config> for Wire {
             probe_enabled: config.probe_enabled,
             connections: config.connections.clone(),
             selected_connection: config.selected_connection.clone(),
+            socks5: config.socks5.clone(),
         }
     }
 }
@@ -296,6 +306,36 @@ impl Config {
     }
 }
 
+/// The local SOCKS5 proxy — sanctioned exception #3 (`docs/architecture.md` §13).
+///
+/// **Off by default**, loopback only, and it refuses to relay anything while the tunnel is not
+/// proven: it is an option for applications that must never touch the network without the VPN,
+/// not a service the application starts on everyone's behalf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Socks5 {
+    pub enabled: bool,
+    /// Loopback only, and enforced in code: a non-local address is refused whatever this says.
+    pub address: String,
+    /// 1080 is the customary SOCKS port; 0 asks the kernel for a free one.
+    pub port: u16,
+    /// How often the tunnel is re-confirmed with the ground-truth probe (exception #1) while the
+    /// proxy is enabled. The free, local route check runs regardless; `0` turns this external one
+    /// off, and the settings page says so.
+    pub verify_seconds: u64,
+}
+
+impl Default for Socks5 {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            address: "127.0.0.1".to_string(),
+            port: 1080,
+            verify_seconds: 30,
+        }
+    }
+}
+
 /// Loads and saves [`Config`], remembering whether the file was there at all.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
@@ -392,9 +432,30 @@ mod tests {
                 port_forwarding: true,
             }],
             selected_connection: Some("work".into()),
+            socks5: Socks5 {
+                enabled: true,
+                address: "127.0.0.1".into(),
+                port: 1080,
+                verify_seconds: 15,
+            },
         };
         store.save(&config).unwrap();
         assert_eq!(store.load().unwrap(), config);
+    }
+
+    #[test]
+    fn the_socks5_proxy_is_off_until_it_is_asked_for() {
+        let config = Config::default();
+        assert!(!config.socks5.enabled);
+        assert_eq!(config.socks5.address, "127.0.0.1");
+        assert_eq!(config.socks5.port, 1080);
+        // A file written before the proxy existed still loads, with the proxy off.
+        let store = temp_store("socks5-partial");
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        fs::write(store.path(), r#"{"probe_enabled": true}"#).unwrap();
+        let loaded = store.load().unwrap();
+        assert!(!loaded.socks5.enabled);
+        assert_eq!(loaded.socks5.port, 1080);
     }
 
     #[test]

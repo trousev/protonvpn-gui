@@ -184,14 +184,16 @@ impl Page {
 pub enum SettingsTab {
     General,
     Connection,
+    Proxy,
     Polling,
     Account,
 }
 
 impl SettingsTab {
-    pub const ALL: [SettingsTab; 4] = [
+    pub const ALL: [SettingsTab; 5] = [
         SettingsTab::General,
         SettingsTab::Connection,
+        SettingsTab::Proxy,
         SettingsTab::Polling,
         SettingsTab::Account,
     ];
@@ -200,6 +202,7 @@ impl SettingsTab {
         match self {
             Self::General => "Общие",
             Self::Connection => "Подключение",
+            Self::Proxy => "Прокси",
             Self::Polling => "Опрос",
             Self::Account => "Аккаунт",
         }
@@ -472,6 +475,14 @@ pub enum Message {
     PortRefresh,
     PortRelease,
     CopyPort,
+    /// The local SOCKS5 proxy. The toggle and the address fields are separate on purpose:
+    /// enabling it is a decision, changing the port restarts the listener.
+    Socks5Enabled(bool),
+    Socks5Address(String),
+    Socks5Port(String),
+    Socks5Verify(String),
+    Socks5Apply,
+    CopySocks5,
     DismissNotice,
 }
 
@@ -505,8 +516,12 @@ pub struct App {
     login_two_factor: String,
     login_show_password: bool,
     manual_input: String,
+    socks5_address: String,
+    socks5_port: String,
+    socks5_verify: String,
     notice: Option<String>,
     copied_port_at: Option<Instant>,
+    copied_socks5_at: Option<Instant>,
 }
 
 impl App {
@@ -521,6 +536,9 @@ impl App {
         let mut console = ConsoleModel::default();
         console.refresh(&engine.bus().lock().unwrap_or_else(|p| p.into_inner()));
         Self {
+            socks5_address: config.socks5.address.clone(),
+            socks5_port: config.socks5.port.to_string(),
+            socks5_verify: config.socks5.verify_seconds.to_string(),
             engine,
             config,
             shared,
@@ -546,6 +564,7 @@ impl App {
             manual_input: String::new(),
             notice: None,
             copied_port_at: None,
+            copied_socks5_at: None,
         }
     }
 
@@ -921,6 +940,52 @@ impl App {
                 self.stick_to_bottom = true;
                 self.scroll_to_bottom()
             }
+            Message::Socks5Enabled(enabled) => {
+                let mut config = self.config.clone();
+                config.socks5.enabled = enabled;
+                self.save_config(config);
+                Task::none()
+            }
+            Message::Socks5Address(value) => {
+                self.socks5_address = value;
+                Task::none()
+            }
+            Message::Socks5Port(value) => {
+                self.socks5_port = value;
+                Task::none()
+            }
+            Message::Socks5Verify(value) => {
+                self.socks5_verify = value;
+                Task::none()
+            }
+            Message::Socks5Apply => {
+                // A typo must not look accepted: an unparsable port is not silently 1080, and an
+                // unparsable interval is not silently "verification off". The fields keep what the
+                // user typed and the notice says what is wrong.
+                let Ok(port) = self.socks5_port.trim().parse::<u16>() else {
+                    self.notice = Some("Порт прокси: нужно число от 0 до 65535".to_string());
+                    return Task::none();
+                };
+                let Ok(verify) = self.socks5_verify.trim().parse::<u64>() else {
+                    self.notice =
+                        Some("Проверка туннеля: нужно число секунд (0 — выключить)".to_string());
+                    return Task::none();
+                };
+                let mut config = self.config.clone();
+                config.socks5.address = self.socks5_address.trim().to_string();
+                config.socks5.port = port;
+                // Clamped here as well as in the engine: the field must show what is in use.
+                config.socks5.verify_seconds = verify.min(86_400);
+                self.socks5_address = config.socks5.address.clone();
+                self.socks5_port = config.socks5.port.to_string();
+                self.socks5_verify = config.socks5.verify_seconds.to_string();
+                self.save_config(config);
+                Task::none()
+            }
+            Message::CopySocks5 => {
+                self.copied_socks5_at = Some(Instant::now());
+                clipboard::write(self.socks5_address_text())
+            }
             Message::DismissNotice => {
                 self.notice = None;
                 Task::none()
@@ -1106,6 +1171,19 @@ impl App {
             .account
             .as_ref()
             .map(|observation| observation.age_text())
+    }
+
+    /// What an application should be pointed at: the address that is actually listening, or the
+    /// configured one while there is no listener.
+    pub fn socks5_address_text(&self) -> String {
+        match self.shared.socks5.listen {
+            Some(address) => address.to_string(),
+            None => format!(
+                "{}:{}",
+                self.config.socks5.address.trim(),
+                self.config.socks5.port
+            ),
+        }
     }
 
     /// Which connection is selected, as the name a person would use.
@@ -1355,6 +1433,40 @@ mod tests {
 
         let _ = app.update(Message::SignInCancelled);
         assert!(!app.login_was_forced());
+    }
+
+    /// Every page and every settings tab must build with the configuration a fresh install has.
+    /// A view that panics is a window that never opens, and no other test would catch it — the
+    /// settings page has six tabs now, and the proxy's card has a state for each way its gate can
+    /// be shut.
+    #[test]
+    fn every_page_and_settings_tab_renders() {
+        let dir = std::env::temp_dir().join(format!("protonvpn-gui-render-{}", std::process::id()));
+        let config = Config {
+            probe_enabled: false,
+            ..Default::default()
+        };
+        let mut options =
+            EngineOptions::new(ConfigStore::at(dir.join("config.json")), config.clone());
+        options.program = dir.join("no-such-cli").to_string_lossy().into_owned();
+        let engine = protonvpn_core::engine::spawn(options);
+        let (_tx, rx) = std::sync::mpsc::channel::<TrayCommand>();
+        let mut app = App::new(engine, config, rx, None, window::Settings::default());
+
+        // Nothing observed yet: the overview and the settings page both have to hold up.
+        let _ = views::overview::view(&app);
+        for tab in SettingsTab::ALL {
+            app.settings_tab = tab;
+            let _ = views::settings::view(&app);
+        }
+
+        // The proxy switched on, with a listener the engine has not reported yet: the card reads
+        // counters and a gate state that are both empty, and must still render.
+        let mut enabled = app.config.clone();
+        enabled.socks5.enabled = true;
+        app.config = enabled;
+        app.settings_tab = SettingsTab::Proxy;
+        let _ = views::settings::view(&app);
     }
 
     #[test]

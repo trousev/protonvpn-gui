@@ -15,19 +15,31 @@ Proton VPN CLI. It does not read NetworkManager, D-Bus state, the keyring, or Pr
 files, and it does not take the session-bus name `proton.vpn.app.gtk`, because doing so would break
 the CLI it depends on.
 
-Exactly two exceptions exist, each bounded, and they are listed with their reasoning in
+Exactly three exceptions exist, each bounded, and they are listed with their reasoning in
 [`docs/architecture.md`](docs/architecture.md) §0:
 
 | Exception | What it can touch |
 |---|---|
 | `curl` to an IP-echo service | a keyless third-party URL, to see whether the egress address actually changed |
 | NAT-PMP to the documented Proton gateway `10.2.0.1:5351` | the port-forwarding lease, UDP only |
+| a local SOCKS5 listener, and the kernel's routing answer behind it | loopback (`127.0.0.0/8`) only, **off by default**; the route read is a connected UDP socket that is never written to |
 
-A third — an opt-in push of the forwarded port into a local qBittorrent — was built and then
+An earlier exception — an opt-in push of the forwarded port into a local qBittorrent — was built and then
 removed: it never worked against a real client, and it is not worth a permanent hole in the rule
 above. See [`docs/architecture.md`](docs/architecture.md) §10.4.
 
 Anything that would become a third exception is a decision for a human, not a patch.
+
+The SOCKS5 proxy deserves its own line here, because it is the feature a reader will suspect:
+it relays an application's traffic only while the kernel still routes it the way the tunnel did,
+it re-reads that route every 200 ms, and it drops what it has already relayed the moment the
+answer changes. What it cannot promise is written down in
+[`docs/architecture.md`](docs/architecture.md) §13.2 rather than left to be discovered: a route
+change that keeps the same source address, DNS through the system resolver, IPv6 refused rather
+than guessed at, and the window between the route check and the connect — the name lookup plus up
+to ten seconds of dial — in which a handshake can carry the destination and your real address,
+though never a byte of the application's. It is also loopback-only with **no authentication**: any
+local process can use the door while it is open, which is the same promise `ssh -D` makes.
 
 ## Secrets
 

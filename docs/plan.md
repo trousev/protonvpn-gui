@@ -92,8 +92,10 @@ protonvpn-gui/                        (workspace)
 
 `net/natpmp.rs` is the project's second sanctioned exception to "only `protonvpn`", granted in
 [`architecture.md`](architecture.md) §10.1: it talks to the gateway address Proton documents
-publicly (`10.2.0.1`, standard NAT-PMP port `5351`). Everything else in §0 of that document stays
-forbidden — no NetworkManager, no D-Bus, no keyring, no Proton-internal files.
+publicly (`10.2.0.1`, standard NAT-PMP port `5351`). `socks5.rs`, with `net/route.rs` behind it, is
+the third (§10.5, §13): a loopback-only proxy whose gate is the kernel's own routing answer.
+Everything else in §0 of that document stays forbidden — no NetworkManager, no D-Bus, no keyring,
+no Proton-internal files.
 
 ### State model
 
@@ -102,7 +104,7 @@ ConnectionState = Unknown | Disconnected | Connecting | Connected{server, locati
 RunnerStatus    = Idle | Running{argv, started_at} | Queued{depth}
 ```
 
-Both carry a timestamp; the UI renders stale state as stale rather than asserting it.
+Both carry a timestamp; the UI renders state with its age rather than asserting it.
 The tray is driven by `ConnectionState`, the collapsed console by `RunnerStatus`.
 Because state is polled, transitions we cause are optimistic: the UI shows `Connecting` as soon as
 a `connect` child starts, and the interpreter reconciles from the log.
@@ -205,6 +207,25 @@ readable and copyable.
 > the *selected profile*, and a profile that wants one sets the CLI's single global preference
 > before connecting, in the open.
 
+### Phase 2.75 — The paranoid option: a local SOCKS5 proxy — **done**
+
+> [`architecture.md`](architecture.md) §13. An application that must never reach the network
+> without the VPN is pointed at `127.0.0.1:1080`; the proxy relays only while the tunnel can be
+> *shown* to carry traffic, and refuses with SOCKS5 `0x02` (a shut gate; anything else it cannot
+> serve gets the reply code that fits — `0x07`, `0x08`, `0x03`, `0x04`). Off by default, loopback
+> only, IPv4 + `CONNECT` only, no authentication.
+>
+> The gate is not a `status` poll: it is the kernel's source-address answer for off-link traffic
+> (`net/route.rs`, one connected UDP socket that is never written to), opened only when that answer
+> differs from one observed while the CLI said the tunnel was down, re-read every 200 ms while the
+> door is open, and checked again around every dial. The egress probe (exception #1) confirms it
+> every `verify_seconds` — when that probe is enabled at all — and closes the door if the
+> pre-connection address comes back. Everything
+> the design cannot promise — a route change that keeps the same source address, the window
+> between the route check and the connect (the name lookup plus up to ten seconds of dial), DNS
+> through the system resolver, IPv6 refused rather than guessed — is written down in §13.2 rather
+> than left to be discovered.
+
 ### Phase 3 — Packaging — **done**
 
 > Releases are on demand: `./scripts/release.sh` dispatches `.github/workflows/release.yml` with
@@ -260,10 +281,11 @@ connection works. Staleness is handled by the timestamp-and-attention-poll desig
 | **NAT-PMP endpoint changes** | port forwarding silently stops | gateway is documented publicly and port 5351 is an IANA standard; probe with opcode 0 first and degrade honestly if it times out |
 | TTY changes CLI output vs the captured fixtures | parsers break on colours/progress | **re-capture all fixtures through a PTY before writing parsers** (§10.3) |
 | Secrets in the transcript | password leaked into scrollback | read-only console + masked input fields; secrets go to the PTY, never to the log bus |
-| State up to 5 min stale | UI asserts something untrue | timestamp every field; render stale as stale, never as fact |
+| State up to 5 min stale | UI asserts something untrue | timestamp every field; render the age, never a bare verdict |
 | A connect we did not initiate (user's own terminal) | UI disagrees with reality until the next poll | attention-driven poll on window open / tray click |
 | Port shown on a server that doesn't support forwarding | user pastes a port that never worked | only request a lease where the connect output says forwarding is active; otherwise explain |
 | Forwarded port changes after a reconnect | user's P2P app points at a dead port | make the current port prominent and easy to re-copy |
+| The SOCKS5 proxy claims protection it cannot prove | a paranoid user trusts a door that was never armed | it arms only on a route the kernel was seen to change, stays shut otherwise, and says on the settings page why; the residual risks are §13.2, not a footnote |
 
 ---
 
@@ -284,8 +306,12 @@ connection works. Staleness is handled by the timestamp-and-attention-poll desig
 10. Port forwarding is **allowed** — exception #2; the NAT-PMP endpoint comes from Proton's public
     documentation (`10.2.0.1`, IANA-standard port `5351`), not from the CLI. See §10.1.
 11. Delivering the port is **display and copy**, nothing else. A push into a local torrent client
-    was built as exception #3 and withdrawn: it never worked against a real client, and convenience
+    was built as an exception and withdrawn: it never worked against a real client, and convenience
     for one program is not worth a standing hole in the rule. See §10.4.
+12. The local SOCKS5 proxy is **allowed but off by default** — exception #3; loopback only, IPv4 +
+    `CONNECT` only, and it fails closed on evidence rather than on hope (§10.5, §13). The one new
+    system fact is the kernel's own routing answer, which is the question every client asks the
+    kernel when it opens a socket.
 
 **Open**
 
