@@ -22,6 +22,27 @@ use protonvpn_core::model::ConnectionStatus;
 /// Size of the generated icon. StatusNotifierItems are usually rendered at 22 px.
 const ICON_SIZE: i32 = 22;
 
+/// Samples per axis per pixel. The shield is nothing but slanted edges, and at 22 px an unsampled
+/// edge is a staircase. Sixteen samples per pixel cost nothing at the rate this is rebuilt — once
+/// per status change, not per frame.
+const SUBSAMPLES: usize = 4;
+
+/// The shield, in fractions of the icon box with `y` downwards.
+///
+/// * `TOP` / `BOTTOM` — the flat top edge and the tip.
+/// * `HALF` — half the width of the body.
+/// * `SHOULDER` — how far down the sides stay straight before the taper begins.
+/// * `CORNER` — the radius that keeps the top corners from ending in two spikes.
+/// * `TAPER_POW` / `TAPER_ROOT` — the taper follows `HALF · (1 − u^POW)^ROOT`. A root below one is
+///   what turns the bottom into a point instead of a "U".
+const TOP: f32 = 0.07;
+const BOTTOM: f32 = 0.96;
+const HALF: f32 = 0.39;
+const SHOULDER: f32 = 0.30;
+const CORNER: f32 = 0.14;
+const TAPER_POW: f32 = 1.2;
+const TAPER_ROOT: f32 = 0.50;
+
 /// What the tray asks the window to do.
 ///
 /// The tray never talks to the engine directly: it sends these to the GUI, which is the single
@@ -160,22 +181,58 @@ pub fn spawn(tx: Sender<TrayCommand>, view: TrayView) -> Option<TrayPresenter> {
     }
 }
 
-/// A filled circle in the status colour, ARGB32 in network byte order.
+/// Half the shield's width at height `y`, in the fractions the constants above are written in.
+/// `None` is outside the shield's vertical extent.
+fn half_width(y: f32) -> Option<f32> {
+    if !(TOP..=BOTTOM).contains(&y) {
+        return None;
+    }
+
+    let shoulder = TOP + SHOULDER * (BOTTOM - TOP);
+    if y < TOP + CORNER {
+        // A quarter circle at each top corner, so the side meets the top edge squarely.
+        let drop = TOP + CORNER - y;
+        Some(HALF - CORNER + (CORNER * CORNER - drop * drop).max(0.0).sqrt())
+    } else if y <= shoulder {
+        // Straight sides up here: this is what makes the silhouette a shield and not a teardrop.
+        Some(HALF)
+    } else {
+        let u = (y - shoulder) / (BOTTOM - shoulder);
+        Some(HALF * (1.0 - u.powf(TAPER_POW)).powf(TAPER_ROOT))
+    }
+}
+
+/// Is the point inside the shield? `x` and `y` are fractions of the icon box, `y` downwards.
+fn inside(x: f32, y: f32) -> bool {
+    half_width(y).is_some_and(|half| (x - 0.5).abs() <= half)
+}
+
+/// The tray icon: a shield in the status colour, ARGB32 in network byte order.
+///
+/// A shield rather than the dot this used to be. The tray has exactly one question to answer — "am
+/// I covered" — and the silhouette says which question it is at a glance, while the colour says
+/// which answer it got. It stays a generated bitmap rather than a themed icon name: on a minimal
+/// desktop there may be no icon theme at all.
 fn status_icon(status: &ConnectionStatus) -> ksni::Icon {
     let (r, g, b) = status_rgb(status);
     let size = ICON_SIZE as usize;
+    let samples = (SUBSAMPLES * SUBSAMPLES) as u32;
+    let step = 1.0 / (SUBSAMPLES * size) as f32;
     let mut data = Vec::with_capacity(size * size * 4);
-    let center = (ICON_SIZE as f32 - 1.0) / 2.0;
-    let radius = center;
 
     for y in 0..size {
         for x in 0..size {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            let distance = (dx * dx + dy * dy).sqrt();
-            // A soft edge, so the dot does not look like a square on a HiDPI panel.
-            let alpha = ((radius - distance).clamp(0.0, 1.0) * 255.0) as u8;
-            data.extend_from_slice(&[alpha, r, g, b]);
+            let mut hits = 0;
+            for sy in 0..SUBSAMPLES {
+                for sx in 0..SUBSAMPLES {
+                    let px = (x * SUBSAMPLES + sx) as f32 * step + step / 2.0;
+                    let py = (y * SUBSAMPLES + sy) as f32 * step + step / 2.0;
+                    hits += u32::from(inside(px, py));
+                }
+            }
+            // Alpha is how much of the pixel the shield covers. The colour is flat, because the
+            // panel decides what is behind the icon and only alpha can blend with that.
+            data.extend_from_slice(&[(hits * 255 / samples) as u8, r, g, b]);
         }
     }
 
@@ -225,6 +282,51 @@ mod tests {
         assert_eq!(icon.data[0], 0);
     }
 
+    /// The columns a row paints at more than half opacity — the silhouette, minus the soft edge.
+    fn painted_span(icon: &ksni::Icon, row: usize) -> Option<(usize, usize)> {
+        let size = ICON_SIZE as usize;
+        let line = &icon.data[row * size * 4..(row + 1) * size * 4];
+        let lit = |column: usize| line[column * 4] > 127;
+        let left = (0..size).find(|&column| lit(column))?;
+        let right = (0..size).rev().find(|&column| lit(column))?;
+        Some((left, right))
+    }
+
+    #[test]
+    fn the_icon_is_a_shield_and_not_a_disc() {
+        let icon = status_icon(&ConnectionStatus::Disconnected);
+        let size = ICON_SIZE as usize;
+        let widths: Vec<usize> = (0..size)
+            .filter_map(|row| painted_span(&icon, row).map(|(left, right)| right - left + 1))
+            .collect();
+        assert!(widths.len() >= size - 4, "painted rows: {}", widths.len());
+
+        // A disc enters and leaves the box at a point. A shield enters along a flat top edge, which
+        // is the whole difference between the two silhouettes at this size.
+        let widest = *widths.iter().max().unwrap();
+        assert!(
+            widths[0] * 10 >= widest * 7,
+            "top row {} vs widest {widest}",
+            widths[0]
+        );
+
+        // And leaves at a point, below the shoulder, narrowing the rest of the way.
+        let last = *widths.last().unwrap();
+        assert!(last * 3 <= widest, "bottom row {last} vs widest {widest}");
+        let shoulder = widths.iter().position(|width| *width == widest).unwrap();
+        assert!(
+            widths[shoulder..].windows(2).all(|pair| pair[1] <= pair[0]),
+            "the taper is not monotone: {widths:?}"
+        );
+
+        // Symmetrical about the centre column: a shield is not a leaf.
+        for row in 0..size {
+            if let Some((left, right)) = painted_span(&icon, row) {
+                assert_eq!(left + right, size - 1, "row {row} leans");
+            }
+        }
+    }
+
     #[test]
     fn connected_and_disconnected_are_visibly_different() {
         let connected = status_icon(&ConnectionStatus::Connected(Default::default()));
@@ -236,6 +338,10 @@ mod tests {
             (76, 175, 80)
         );
         assert_eq!(status_rgb(&ConnectionStatus::Disconnected), (158, 158, 158));
+        // Same silhouette either way, because only the answer differs: a status that changed the
+        // shape too would be two things to read instead of one.
+        let alpha = |icon: &ksni::Icon| icon.data.iter().step_by(4).copied().collect::<Vec<u8>>();
+        assert_eq!(alpha(&connected), alpha(&disconnected));
     }
 
     #[test]
