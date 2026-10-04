@@ -29,7 +29,11 @@ each exists because the CLI genuinely cannot do the job.
 |---|---|---|---|
 | 1 | `curl` to an IP-echo service | ground truth: the CLI's self-report is unreliable (measured: it printed `149.88.27.213` while real egress was `149.22.89.89`) | read-only, third party, keyless, no Proton data involved |
 | 2 | NAT-PMP to `10.2.0.1:5351` | the port-forwarding lease — the CLI only sets a preference and tells the user to run an external script | gateway is publicly documented by Proton, port is an IANA standard (RFC 6886); probe with opcode 0 first, degrade honestly |
-| 3 | qBittorrent Web API on localhost | optional convenience: hand the forwarded port to the P2P client so the user never copy-pastes | **off by default**, localhost only, user-enabled (§10.4) |
+
+A third exception was tried and withdrawn: an opt-in push of the forwarded port into a local
+qBittorrent over its Web API. It never worked against a real client, and a convenience for one
+torrent client is not worth a permanent hole in the "only `protonvpn`" rule. The port is
+displayed and copyable instead (§10.4), which is what the feature was for.
 
 **Forbidden, permanently:** NetworkManager, D-Bus, the keyring's Proton entries, the gateway
 except as listed above, `/run/user/$UID/Proton/VPN/forwarded_port`, and Proton's `settings.json`
@@ -354,38 +358,25 @@ Consequences to handle:
   `tests/fixtures/pty/` (13 invocations, raw output plus `.meta.json`). Details in
   [`cli-surface.md`](cli-surface.md) §4.8.
 
-### 10.4 Port delivery — **RESOLVED: display, plus opt-in qBittorrent push**
+### 10.4 Port delivery — **RESOLVED: display, and a copy button**
 
-Two things, deliberately separated:
-
-**Always:** the forwarded port is displayed prominently with a copy button. It must be pasted
-into whatever P2P client the user runs, so copyability is a core requirement, not a nicety.
+The forwarded port is displayed prominently with a copy button. It must be pasted into whatever
+P2P client the user runs, so copyability is a core requirement, not a nicety.
 
 Whether a lease is held at all is a property of the connection being connected (§11), not of the
-application. **Opt-in, off by default:** a **separate tab** holds an optional checkbox for pushing
-the port into qBittorrent via its Web API. Disabled unless the user explicitly turns it on — enabling it
-is a deliberate act, because it changes another application's configuration.
+application.
 
-Tab contents:
+An opt-in push into a local qBittorrent over its Web API was designed, built, and then
+**withdrawn** — see §0. It never worked against a real client, and "hand the port to your torrent
+client" is a convenience for one program, not a job the CLI cannot do. Pushing state into another
+application also meant carrying a third-party credential, which is a cost the display never had.
 
-- enable checkbox — **off by default**
-- host and port, defaulting to `localhost:8080`
-- optional credentials (qBittorrent is commonly configured to bypass auth for localhost)
-- behaviour: on every port change, `POST /api/v2/app/setPreferences` with `listen_port`
+What would have to be true to try again:
 
-Design notes:
-
-- **Localhost only.** Never a remote host. This is a local convenience integration, not a
-  feature for managing a remote client.
-- **Every push is visible in the console.** The console is where we show what we did, and an HTTP
-  call is still something we did. Render it as an honest pseudo-invocation, e.g.
-  `POST http://localhost:8080/api/v2/app/setPreferences {listen_port: 39949} → 200 OK`.
-  It is not a `protonvpn` command and must never be dressed up as one.
-- Credentials storage is a detail to settle when it is built: a credential for a third-party
-  local service does not belong in plaintext config, and the §0 prohibition covers only Proton's
-  keyring entries, not the system keyring as such.
-- This is exception #3 in §0, and it stayed the smallest of the three: it runs nothing, it talks
-  to localhost, and it is off until asked for.
+- a P2P client whose API is actually exercised in a live test, not just in a stand-in HTTP server;
+- a story for the credential that is not "hold it in memory and hope";
+- the honest console rendering, unchanged: an HTTP call is not a `protonvpn` command and must
+  never be dressed up as one.
 
 ---
 

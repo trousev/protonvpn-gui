@@ -7,7 +7,7 @@
 //! succeeding is not evidence that the CLI agreed (`docs/architecture.md` §5).
 
 use iced::widget::{
-    Space, button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
+    Space, button, column, container, pick_list, row, scrollable, text, text_input,
 };
 use iced::{Alignment, Element, Length, Padding, Theme};
 
@@ -22,8 +22,13 @@ use crate::widgets::{self, Tone};
 fn cli_keys(tab: SettingsTab) -> &'static [&'static str] {
     match tab {
         SettingsTab::General => &["kill-switch", "ipv6", "anonymous-crash-reports"],
-        SettingsTab::Connection => &["netshield", "vpn-accelerator", "moderate-nat", "custom-dns"],
-        SettingsTab::Port => &["port-forwarding"],
+        SettingsTab::Connection => &[
+            "netshield",
+            "vpn-accelerator",
+            "moderate-nat",
+            "custom-dns",
+            "port-forwarding",
+        ],
         SettingsTab::Polling => &[],
         SettingsTab::Account => &[],
     }
@@ -337,64 +342,6 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
                     app.selected_name(),
                     super::overview::selected_argv(app)
                 )),
-            ]
-            .spacing(12),
-        ),
-        SettingsTab::Port => widgets::card(
-            column![
-                widgets::eyebrow("Приложение · qBittorrent"),
-                widgets::muted(
-                    "Необязательная передача проброшенного порта в локальный qBittorrent. \
-                     Выключено по умолчанию: включение меняет настройки другой программы."
-                ),
-                checkbox(app.config.qbittorrent.enabled)
-                    .label("Передавать порт в qBittorrent (localhost, Web API)")
-                    .text_size(13)
-                    .on_toggle(Message::QbEnabled),
-                row![
-                    widgets::faint("Хост"),
-                    text_input("localhost", &app.qb_host)
-                        .on_input(Message::QbHost)
-                        .padding(Padding::from([7, 10]))
-                        .width(Length::Fixed(200.0)),
-                    widgets::faint("Порт"),
-                    text_input("8080", &app.qb_port)
-                        .on_input(Message::QbPort)
-                        .padding(Padding::from([7, 10]))
-                        .width(Length::Fixed(90.0)),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-                row![
-                    widgets::faint("Логин"),
-                    text_input("обычно пусто", &app.qb_username)
-                        .on_input(Message::QbUsername)
-                        .padding(Padding::from([7, 10]))
-                        .width(Length::Fixed(200.0)),
-                    widgets::faint("Пароль"),
-                    text_input("не сохраняется", &app.qb_password)
-                        .secure(true)
-                        .on_input(Message::QbPassword)
-                        .padding(Padding::from([7, 10]))
-                        .width(Length::Fixed(200.0)),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-                row![
-                    button(text("Сохранить и передать порт").size(13))
-                        .padding(Padding::from([8, 14]))
-                        .style(theme::filled(theme::ACCENT))
-                        .on_press(Message::QbPushNow),
-                    widgets::faint(
-                        "Пароль живёт только в памяти процесса. Соединение только с localhost."
-                    ),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
-                widgets::faint(
-                    "Каждая передача видна в консоли как отдельная запись: это HTTP-запрос, а не \
-                     команда protonvpn, и выдавать его за неё нельзя."
-                ),
             ]
             .spacing(12),
         ),

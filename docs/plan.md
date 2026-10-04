@@ -132,7 +132,7 @@ and the CLI's exact error when the official GTK app is running.
 ### Phase 1 — Tray + window MVP, **including port forwarding** — **DONE**
 
 > Implemented in `crates/protonvpn-core` (`runner`, `logbus`, `interpreter`, `launcher`, `parse`,
-> `poll`, `probe`, `net/natpmp`, `qbittorrent`, `config`, `engine`) and `crates/protonvpn-gui`
+> `poll`, `probe`, `net/natpmp`, `config`, `engine`) and `crates/protonvpn-gui`
 > (`iced` window, console pane, `ksni` tray, autostart). Deployment is automated up to a release
 > AppImage. The live round-trip is **verified** (two rounds): start-to-connect, tray status,
 > `status` agreement, egress change and restore, disconnect and quit from the tray, no leftovers.
@@ -177,11 +177,12 @@ readable and copyable.
 ### Phase 2 — Actual usability (1–2 weeks) — **mostly done**
 
 > Country/city browser with search and feature tags, presets, server-ID entry, the settings screen
-> from `config list` / `config set` (values taken from the CLI's own `--help`), the PTY-backed
-> login form with masked fields, and the opt-in qBittorrent tab with its honest pseudo-invocation
-> are all in. Desktop notifications are **not**, and deliberately: they would be a fourth
-> sanctioned exception. Login has not been exercised against the real prompt sequence, because
-> that means signing out first.
+> from `config list` / `config set` (values taken from the CLI's own `--help`), and the PTY-backed
+> login form with masked fields are all in. The opt-in qBittorrent tab was built here and later
+> **removed** — it never worked against a real client, and it was not worth a permanent third
+> exception ([`architecture.md`](architecture.md) §10.4). Desktop notifications are **not** in,
+> and deliberately: they would be a new sanctioned exception. Login has not been exercised against
+> the real prompt sequence, because that means signing out first.
 
 - Country/city browser from `countries list` / `cities list`, with feature tags, search, caching.
 - Presets: fastest / P2P / Secure Core / Tor / random; direct server ID entry.
@@ -189,10 +190,6 @@ readable and copyable.
 - Login / logout with a PTY-backed prompt (password + 2FA), including the 2FA-required
   "traffic blocked" case.
 - Desktop notifications on state transitions.
-- **qBittorrent integration tab** ([`architecture.md`](architecture.md) §10.4): opt-in checkbox
-  (**off by default**), host/port defaulting to `localhost:8080`, optional credentials, and a
-  `setPreferences` push on every port change. Localhost only. Each push is rendered in the console
-  as an honest pseudo-invocation — never dressed up as a `protonvpn` command.
 - Flatpak is **dropped** — AppImage is the only packaging target, so none of the sandbox work
   (Background portal, `--own-name`, `--system-talk-name`) is needed. Autostart is a plain
   `~/.config/autostart/*.desktop`.
@@ -286,13 +283,11 @@ connection works. Staleness is handled by the timestamp-and-attention-poll desig
 9. Capture is via **PTY** for every command — one code path.
 10. Port forwarding is **allowed** — exception #2; the NAT-PMP endpoint comes from Proton's public
     documentation (`10.2.0.1`, IANA-standard port `5351`), not from the CLI. See §10.1.
-11. qBittorrent port push is **allowed but off by default** — exception #3; a separate tab with an
-    opt-in checkbox, localhost only, and every push visible in the console as a pseudo-invocation.
+11. Delivering the port is **display and copy**, nothing else. A push into a local torrent client
+    was built as exception #3 and withdrawn: it never worked against a real client, and convenience
+    for one program is not worth a standing hole in the rule. See §10.4.
 
 **Open**
 
 1. **Framework:** default `iced` + `ksni`; confirm at the deferred UI discussion.
-2. Where to store optional qBittorrent credentials, if the user supplies any (a third-party local
-   service secret does not belong in plaintext config; the §0 keyring prohibition covers Proton's
-   entries, not the system keyring as such).
 5. **Framework:** default `iced` + `ksni`; confirm at the deferred UI discussion.

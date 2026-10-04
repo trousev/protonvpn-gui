@@ -5,15 +5,12 @@
 //! works" mistake the project exists to avoid. So the GUI keeps its own file, and everything the
 //! user toggles in the official app is read through `protonvpn config list` like any other state.
 //!
-//! One deliberate omission: **the qBittorrent password is never written to disk.** It is a
-//! credential for a third-party service; `docs/architecture.md` §10.4 leaves the question open,
-//! and until it is answered the safe reading is "keep it in memory for the session". Everything
-//! else (host, port, username, enable flag) is ordinary configuration.
+//! The file has no secrets in it, and never will: a credential is not configuration.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::model::ConnectTarget;
 
@@ -36,8 +33,21 @@ pub fn default_config_path() -> PathBuf {
     base.join("protonvpn-gui").join("config.json")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+/// Keys this file used to carry and no longer does. Dropped on load rather than rejected: a config
+/// written by an older build must keep working, and the alternative — `deny_unknown_fields`
+/// refusing the whole file — would silently cost the user every setting they have. A key that was
+/// never ours is still a typo, and still an error.
+///
+/// `qbittorrent` went with the integration it configured. It held no secret (the password never
+/// reached the disk), so there is nothing to clean up beyond the key itself.
+const RETIRED_KEYS: [&str; 1] = ["qbittorrent"];
+
+/// The settings, exactly as they are stored.
+///
+/// Serialization goes through [`Wire`], which is the one definition of the file format. The pairs
+/// cannot drift: a field added to one and forgotten in the other is a compile error, because both
+/// `From` implementations name every field.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     /// Connect to the selected connection as soon as the application starts (tray-only start
     /// included).
@@ -63,7 +73,16 @@ pub struct Config {
     /// Which connection the "Подключиться" button and the tray menu use. One namespace:
     /// [`SYSTEM_FASTEST`] and friends, or the `id` of a [`SavedConnection`].
     pub selected_connection: Option<String>,
-    pub qbittorrent: QBittorrent,
+}
+
+/// The selection used when the file does not mention one.
+fn default_selected_connection() -> Option<String> {
+    Some(SYSTEM_FASTEST.to_string())
+}
+
+/// The `.desktop` entry is installed unless the file says otherwise.
+fn default_desktop_entry() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -72,12 +91,84 @@ impl Default for Config {
             connect_at_startup: false,
             start_minimized: false,
             autostart: false,
-            desktop_entry: true,
+            desktop_entry: default_desktop_entry(),
             probe_enabled: true,
             connections: Vec::new(),
-            selected_connection: Some(SYSTEM_FASTEST.to_string()),
-            qbittorrent: QBittorrent::default(),
+            selected_connection: default_selected_connection(),
         }
+    }
+}
+
+/// The file format, and the only definition of it: [`Config`] serializes through this mirror and
+/// deserializes through it, so a field cannot be readable and unwritable at once.
+///
+/// The mirror exists because `serde` has no container-level `deserialize_with`, and a retired key
+/// has to be dropped while `deny_unknown_fields` still rejects a genuine typo.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Wire {
+    connect_at_startup: bool,
+    start_minimized: bool,
+    autostart: bool,
+    /// On by default, so unlike the other booleans it needs its fallback spelled out — see
+    /// [`default_selected_connection`] for the same problem with a different shape.
+    #[serde(default = "default_desktop_entry")]
+    desktop_entry: bool,
+    probe_enabled: bool,
+    connections: Vec<SavedConnection>,
+    /// Spelled out even though the container is `#[serde(default)]`: that one falls back to
+    /// `Wire::default()`, whose `Option` is `None` — "no selection at all", which is not the same
+    /// statement as "the fastest preset".
+    #[serde(default = "default_selected_connection")]
+    selected_connection: Option<String>,
+}
+
+impl From<Wire> for Config {
+    fn from(wire: Wire) -> Self {
+        Self {
+            connect_at_startup: wire.connect_at_startup,
+            start_minimized: wire.start_minimized,
+            autostart: wire.autostart,
+            desktop_entry: wire.desktop_entry,
+            probe_enabled: wire.probe_enabled,
+            connections: wire.connections,
+            selected_connection: wire.selected_connection,
+        }
+    }
+}
+
+impl From<&Config> for Wire {
+    fn from(config: &Config) -> Self {
+        Self {
+            connect_at_startup: config.connect_at_startup,
+            start_minimized: config.start_minimized,
+            autostart: config.autostart,
+            desktop_entry: config.desktop_entry,
+            probe_enabled: config.probe_enabled,
+            connections: config.connections.clone(),
+            selected_connection: config.selected_connection.clone(),
+        }
+    }
+}
+
+impl Serialize for Config {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        Wire::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Config {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Read the file as data first, so the retired keys can be struck before the strict pass.
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        if let Some(object) = value.as_object_mut() {
+            for key in RETIRED_KEYS {
+                object.remove(key);
+            }
+        }
+        Wire::deserialize(value)
+            .map(Into::into)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -205,28 +296,6 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct QBittorrent {
-    /// Off by default: enabling it changes another application's configuration
-    /// (`docs/architecture.md` §10.4).
-    pub enabled: bool,
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-}
-
-impl Default for QBittorrent {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            host: "localhost".to_string(),
-            port: 8080,
-            username: String::new(),
-        }
-    }
-}
-
 /// Loads and saves [`Config`], remembering whether the file was there at all.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
@@ -323,12 +392,6 @@ mod tests {
                 port_forwarding: true,
             }],
             selected_connection: Some("work".into()),
-            qbittorrent: QBittorrent {
-                enabled: true,
-                host: "localhost".into(),
-                port: 8080,
-                username: "admin".into(),
-            },
         };
         store.save(&config).unwrap();
         assert_eq!(store.load().unwrap(), config);
@@ -405,26 +468,34 @@ mod tests {
         fs::write(store.path(), r#"{"start_minimized": true}"#).unwrap();
         let config = store.load().unwrap();
         assert!(config.start_minimized);
-        assert!(!config.qbittorrent.enabled);
-        assert_eq!(config.qbittorrent.port, 8080);
         assert!(config.connections.is_empty());
         assert_eq!(config.selected_connection.as_deref(), Some(SYSTEM_FASTEST));
     }
 
     #[test]
-    fn the_qbittorrent_password_is_not_part_of_the_file_format() {
-        let store = temp_store("nosecret");
-        let config = Config {
-            qbittorrent: QBittorrent {
-                enabled: true,
-                username: "admin".into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+    fn a_config_written_before_qbittorrent_was_removed_still_loads() {
+        // The key is gone from the format; the file someone already has is not.
+        let store = temp_store("retired-key");
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        fs::write(
+            store.path(),
+            r#"{
+                "start_minimized": true,
+                "qbittorrent": {
+                    "enabled": true,
+                    "host": "localhost",
+                    "port": 8080,
+                    "username": "admin"
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = store.load().unwrap();
+        assert!(config.start_minimized);
+        // And the key does not come back the next time we write the file.
         store.save(&config).unwrap();
         let text = fs::read_to_string(store.path()).unwrap();
-        assert!(!text.contains("password"), "{text}");
+        assert!(!text.contains("qbittorrent"), "{text}");
     }
 
     #[test]

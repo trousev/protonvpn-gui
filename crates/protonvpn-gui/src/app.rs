@@ -183,16 +183,14 @@ impl Page {
 pub enum SettingsTab {
     General,
     Connection,
-    Port,
     Polling,
     Account,
 }
 
 impl SettingsTab {
-    pub const ALL: [SettingsTab; 5] = [
+    pub const ALL: [SettingsTab; 4] = [
         SettingsTab::General,
         SettingsTab::Connection,
-        SettingsTab::Port,
         SettingsTab::Polling,
         SettingsTab::Account,
     ];
@@ -201,7 +199,6 @@ impl SettingsTab {
         match self {
             Self::General => "Общие",
             Self::Connection => "Подключение",
-            Self::Port => "Порт-форвардинг",
             Self::Polling => "Опрос",
             Self::Account => "Аккаунт",
         }
@@ -474,12 +471,6 @@ pub enum Message {
     PortRefresh,
     PortRelease,
     CopyPort,
-    QbEnabled(bool),
-    QbHost(String),
-    QbPort(String),
-    QbUsername(String),
-    QbPassword(String),
-    QbPushNow,
     DismissNotice,
 }
 
@@ -513,10 +504,6 @@ pub struct App {
     login_two_factor: String,
     login_show_password: bool,
     manual_input: String,
-    qb_host: String,
-    qb_port: String,
-    qb_username: String,
-    qb_password: String,
     notice: Option<String>,
     copied_port_at: Option<Instant>,
 }
@@ -533,9 +520,6 @@ impl App {
         let mut console = ConsoleModel::default();
         console.refresh(&engine.bus().lock().unwrap_or_else(|p| p.into_inner()));
         Self {
-            qb_host: config.qbittorrent.host.clone(),
-            qb_port: config.qbittorrent.port.to_string(),
-            qb_username: config.qbittorrent.username.clone(),
             engine,
             config,
             shared,
@@ -559,7 +543,6 @@ impl App {
             login_two_factor: String::new(),
             login_show_password: false,
             manual_input: String::new(),
-            qb_password: String::new(),
             notice: None,
             copied_port_at: None,
         }
@@ -923,42 +906,6 @@ impl App {
                 }
             }
             Message::CopyAll => clipboard::write(self.console.transcript.clone()),
-            Message::QbEnabled(enabled) => {
-                let mut config = self.config.clone();
-                config.qbittorrent.enabled = enabled;
-                self.save_config(config);
-                Task::none()
-            }
-            Message::QbHost(value) => {
-                self.qb_host = value;
-                Task::none()
-            }
-            Message::QbPort(value) => {
-                self.qb_port = value;
-                Task::none()
-            }
-            Message::QbUsername(value) => {
-                self.qb_username = value;
-                Task::none()
-            }
-            Message::QbPassword(value) => {
-                self.qb_password = value;
-                Task::none()
-            }
-            Message::QbPushNow => {
-                let port = self.qb_port.trim().parse::<u16>().unwrap_or(8080);
-                let mut config = self.config.clone();
-                config.qbittorrent.host = self.qb_host.trim().to_string();
-                config.qbittorrent.port = port;
-                config.qbittorrent.username = self.qb_username.clone();
-                self.save_config(config);
-                self.engine
-                    .send(Request::SetQBittorrentPassword(self.qb_password.clone()));
-                // A push happens on the next port change; this nudges the lease so the change is
-                // real rather than cosmetic.
-                self.engine.send(Request::PortForwardRefresh);
-                Task::none()
-            }
             Message::ConsoleScrolled(viewport) => {
                 // "Stick to bottom" while the user is at the bottom; stop as soon as they scroll
                 // up, because fighting a reader for the scroll position is the classic way to make
