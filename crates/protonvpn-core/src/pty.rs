@@ -14,6 +14,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::i18n::I18n;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 /// The command line as it would be typed, for display in the console.
@@ -108,17 +109,18 @@ pub enum PtyError {
     Io(String),
 }
 
-impl std::fmt::Display for PtyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl PtyError {
+    /// One clause, never a sentence of its own: this is the `$detail` of the runner's "could not
+    /// start …" line, which is the only place a failing PTY is ever shown. A catalogue rather than
+    /// `Display`, for the reason [`crate::socks5::Closed::describe`] gives — a person reads it.
+    pub fn describe(&self, i18n: &I18n) -> String {
         match self {
-            Self::OpenPty(e) => write!(f, "failed to open pty: {e}"),
-            Self::Spawn(e) => write!(f, "failed to spawn child: {e}"),
-            Self::Io(e) => write!(f, "pty i/o error: {e}"),
+            Self::OpenPty(detail) => i18n.core_pty_open(detail),
+            Self::Spawn(detail) => i18n.core_pty_spawn(detail),
+            Self::Io(detail) => i18n.core_pty_io(detail),
         }
     }
 }
-
-impl std::error::Error for PtyError {}
 
 /// Runs a command attached to a fresh PTY and captures everything it writes.
 ///
@@ -188,7 +190,7 @@ impl SpawnedInvocation {
     }
 
     /// Kills the child. Used only when an invocation exceeds its deadline, so that a wedged
-    /// command cannot leave the application saying "работаю" forever.
+    /// command cannot leave the console bar saying "working" forever.
     pub fn kill(&mut self) -> Result<(), PtyError> {
         self.child.kill().map_err(|e| PtyError::Io(e.to_string()))
     }

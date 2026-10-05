@@ -70,7 +70,9 @@ fn boot() -> (App, Task<Message>) {
     let store = ConfigStore::default();
     let (config, config_error) = match store.load() {
         Ok(config) => (config, None),
-        Err(error) => (Config::default(), Some(error.to_string())),
+        // Kept as an error rather than as a string: the sentence has to wait for the locale, which
+        // is only known once the config has been read — or has failed to be.
+        Err(error) => (Config::default(), Some(error)),
     };
 
     // The language is decided before anything can be said: the two notes below are sentences of
@@ -99,6 +101,8 @@ fn boot() -> (App, Task<Message>) {
         Err(error) => Some(i18n.chrome_notice_entry_failed(error.to_string())),
     };
 
+    // Only now can it be said: the sentence waits for the catalogue, which waits for the config.
+    let config_error = config_error.map(|error| error.describe(&i18n));
     let start_minimized = config.start_minimized;
     // "Connect at startup" connects the *selected connection*, because that is the only thing the
     // app has that means "what should `protonvpn connect` be". It is a request, not a command: the

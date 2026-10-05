@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::i18n::Locale;
+use crate::i18n::{I18n, Locale};
 use crate::model::ConnectTarget;
 
 /// The selected connection when the user has never chosen one. The three system presets are not
@@ -71,7 +71,7 @@ pub struct Config {
     /// lease — belongs to the profile (`docs/architecture.md` §11). There are deliberately no
     /// global "default preset" settings left: the CLI has connect flags, not defaults.
     pub connections: Vec<SavedConnection>,
-    /// Which connection the "Подключиться" button and the tray menu use. One namespace:
+    /// Which connection the Connect button and the tray menu use. One namespace:
     /// [`SYSTEM_FASTEST`] and friends, or the `id` of a [`SavedConnection`].
     pub selected_connection: Option<String>,
     /// The local SOCKS5 proxy — sanctioned exception #3 (`docs/architecture.md` §13).
@@ -236,18 +236,28 @@ impl SavedConnection {
     }
 
     /// The one-line summary under the name in the list.
-    pub fn summary(&self) -> String {
+    ///
+    /// It takes a catalogue because two of the four cases are our own phrase — "any city", "any
+    /// country" — while the country code and the city name are the CLI's own spelling and stay
+    /// exactly as they arrived.
+    pub fn summary(&self, i18n: &I18n) -> String {
         let mut parts: Vec<String> = Vec::new();
         match (&self.country, &self.city) {
             (Some(country), Some(city)) => parts.push(format!("{country} · {city}")),
-            (Some(country), None) => parts.push(format!("{country} · любой город")),
-            (None, _) => parts.push("любая страна".to_string()),
+            (Some(country), None) => {
+                parts.push(format!("{country} · {}", i18n.core_summary_any_city()));
+            }
+            (None, _) => parts.push(i18n.core_summary_any_country()),
         }
         parts.join(" · ")
     }
 
     /// The badges the list shows next to the name.
-    pub fn badges(&self) -> Vec<String> {
+    ///
+    /// Three of the four are Proton's own product or flag names — `SECURE CORE`, `TOR`, `P2P` —
+    /// and are the same in every language. The fourth is ours: port forwarding is not a CLI flag,
+    /// it is the lease we maintain ourselves, so the badge for it is translated.
+    pub fn badges(&self, i18n: &I18n) -> Vec<String> {
         let mut badges = Vec::new();
         if self.secure_core {
             badges.push("SECURE CORE".to_string());
@@ -259,7 +269,7 @@ impl SavedConnection {
             badges.push("P2P".to_string());
         }
         if self.port_forwarding {
-            badges.push("ПОРТ".to_string());
+            badges.push(i18n.core_badge_port());
         }
         badges
     }
@@ -446,20 +456,29 @@ pub enum ConfigError {
     Parse(String),
 }
 
-impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl ConfigError {
+    /// One line in the window's notice bar, and the same words as a console note when a save fails
+    /// while the application is running.
+    ///
+    /// A catalogue rather than `Display`, for the reason [`crate::socks5::Closed::describe`] gives:
+    /// a person reads this. The operating system's or the JSON parser's own complaint inside it is
+    /// data, and the path is deliberately not part of the sentence — the notice already belongs to
+    /// this application, and the file it means is always the same one.
+    pub fn describe(&self, i18n: &I18n) -> String {
         match self {
-            Self::Io(e) => write!(f, "cannot read or write the config: {e}"),
-            Self::Parse(e) => write!(f, "cannot parse the config: {e}"),
+            Self::Io(detail) => i18n.core_config_io(detail),
+            Self::Parse(detail) => i18n.core_config_parse(detail),
         }
     }
 }
 
-impl std::error::Error for ConfigError {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn english() -> I18n {
+        I18n::new(Locale::SOURCE)
+    }
 
     fn temp_store(name: &str) -> ConfigStore {
         let dir =
@@ -486,7 +505,7 @@ mod tests {
             language: Some(Locale::from_id("ru").unwrap()),
             connections: vec![SavedConnection {
                 id: "work".into(),
-                name: "Работа".into(),
+                name: "Work".into(),
                 country: Some("NL".into()),
                 city: None,
                 p2p: true,
@@ -556,7 +575,7 @@ mod tests {
     fn a_profile_becomes_exactly_the_cli_flags_it_stands_for() {
         let saved = SavedConnection {
             id: "work".into(),
-            name: "Работа".into(),
+            name: "Work".into(),
             country: Some("NL".into()),
             city: None,
             p2p: true,
@@ -569,7 +588,7 @@ mod tests {
         assert!(target.p2p);
         // Ours, not the CLI's: it never reaches argv, it decides whether we hold a lease.
         assert!(target.port_forwarding);
-        assert_eq!(saved.badges(), vec!["P2P", "ПОРТ"]);
+        assert_eq!(saved.badges(&english()), vec!["P2P", "PORT"]);
     }
 
     #[test]
@@ -592,11 +611,11 @@ mod tests {
     #[test]
     fn a_profile_without_a_country_is_any_country() {
         let saved = SavedConnection {
-            name: "Где угодно".into(),
+            name: "Anywhere".into(),
             ..Default::default()
         };
-        assert_eq!(saved.summary(), "любая страна");
-        assert!(saved.badges().is_empty());
+        assert_eq!(saved.summary(&english()), "any country");
+        assert!(saved.badges(&english()).is_empty());
     }
 
     #[test]

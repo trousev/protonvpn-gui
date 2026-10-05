@@ -802,7 +802,12 @@ fn generate(
          vec![\n",
     );
     for (id, message) in source {
-        write!(messages_rs, "            (\"{id}\", self.{}(", method_name(id)).ok();
+        write!(
+            messages_rs,
+            "            (\"{id}\", self.{}(",
+            method_name(id)
+        )
+        .ok();
         for (position, variable) in message.variables.iter().enumerate() {
             if position > 0 {
                 messages_rs.push_str(", ");

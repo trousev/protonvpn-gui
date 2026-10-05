@@ -40,7 +40,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::i18n::I18n;
-use crate::net::route::RouteProbe;
+use crate::net::route::{RouteError, RouteProbe};
 
 /// How long a client has to complete the SOCKS5 handshake before we give up on it.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -70,6 +70,20 @@ const ATYP_IPV6: u8 = 0x04;
 
 // --- the gate -------------------------------------------------------------------------------
 
+/// Why the route the gate was pinned to is no longer usable.
+///
+/// Evidence, not a sentence: the two producers hold different facts — the kernel's refusal, and a
+/// dial that failed — and neither of them has a catalogue. The wording belongs to
+/// [`Closed::describe`], which does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteLoss {
+    /// The kernel would not answer the route question at all.
+    Unreadable(RouteError),
+    /// A dial failed in a way that says the path itself is gone. `target` is the destination and
+    /// `detail` the socket's own complaint — both data.
+    Dial { target: String, detail: String },
+}
+
 /// Why the gate is closed. Every variant is a fact about evidence, never a verdict about the CLI
 /// (`docs/architecture.md` §5).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,8 +100,8 @@ pub enum Closed {
         expected: Ipv4Addr,
         observed: Option<Ipv4Addr>,
     },
-    /// The route or the pinned address is gone; `detail` is the kernel's own complaint.
-    RouteLost { detail: String },
+    /// The route or the pinned address is gone.
+    RouteLost { detail: RouteLoss },
     /// The ground-truth probe reports the pre-connection egress address again: the tunnel is not
     /// carrying traffic, whatever the CLI says.
     EgressIsBaseline { ip: IpAddr },
@@ -116,7 +130,10 @@ impl Closed {
                 }
                 None => i18n.proxy_gate_route_gone(expected.to_string()),
             },
-            Self::RouteLost { detail } => i18n.proxy_gate_route_lost(detail),
+            Self::RouteLost { detail } => i18n.proxy_gate_route_lost(match detail {
+                RouteLoss::Unreadable(error) => error.describe(i18n),
+                RouteLoss::Dial { target, detail } => format!("{target}: {detail}"),
+            }),
             Self::EgressIsBaseline { ip } => i18n.proxy_gate_egress_baseline(ip.to_string()),
             Self::NotListening { detail } => i18n.proxy_gate_not_listening(detail),
             Self::ProbeUnanswered { detail } => i18n.proxy_gate_probe_unanswered(detail),
@@ -184,7 +201,7 @@ impl TunnelGate {
                     observed: Some(observed),
                 }),
                 Err(error) => Err(Closed::RouteLost {
-                    detail: error.to_string(),
+                    detail: RouteLoss::Unreadable(error),
                 }),
             },
         }
@@ -296,19 +313,17 @@ pub enum Socks5Error {
     Bind(String),
 }
 
-impl fmt::Display for Socks5Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Socks5Error {
+    /// Why there is no listener, as one clause. It is never shown on its own: the engine makes it
+    /// the detail of `proxy is not listening: …` on the Settings → Proxy card and in the console
+    /// note that records the moment the gate shut, which is why it is a clause and not a sentence.
+    pub fn describe(&self, i18n: &I18n) -> String {
         match self {
-            Self::NotLoopback(address) => write!(
-                f,
-                "адрес `{address}` не является локальным: прокси слушает только localhost"
-            ),
-            Self::Bind(error) => write!(f, "не удалось занять порт: {error}"),
+            Self::NotLoopback(address) => i18n.proxy_address_not_local(address),
+            Self::Bind(detail) => i18n.proxy_bind_failed(detail),
         }
     }
 }
-
-impl std::error::Error for Socks5Error {}
 
 /// What the proxy tells the engine. Lifecycle only: a refusal per connection would drown the
 /// console, and the console is the product.
@@ -893,11 +908,15 @@ impl Reply {
 
 /// The greeting. No authentication is offered: the listener is loopback-only, which is the same
 /// promise `ssh -D` makes.
+///
+/// The two errors here are developer strings and nothing else — `session` drops the connection on
+/// any error from this function, and no part of them ever reaches the console or the window. They
+/// stay English, where whoever debugs a misbehaving client will look for them.
 fn greet(client: &mut TcpStream) -> io::Result<()> {
     let mut head = [0u8; 2];
     client.read_exact(&mut head)?;
     if head[0] != SOCKS5 {
-        return Err(io::Error::other(format!("версия SOCKS {}", head[0])));
+        return Err(io::Error::other(format!("SOCKS version {}", head[0])));
     }
     let mut methods = vec![0u8; head[1] as usize];
     client.read_exact(&mut methods)?;
@@ -905,9 +924,7 @@ fn greet(client: &mut TcpStream) -> io::Result<()> {
         client.write_all(&[SOCKS5, METHOD_NO_AUTH])
     } else {
         client.write_all(&[SOCKS5, METHOD_NONE])?;
-        Err(io::Error::other(
-            "клиент не предложил метод без аутентификации",
-        ))
+        Err(io::Error::other("client offered no unauthenticated method"))
     }
 }
 
@@ -1000,8 +1017,10 @@ fn verify_source(
         }),
         None => Err(Socks5Event::DialFailed {
             target: target.to_string(),
+            // `Other` does not implicate the path, so the engine says nothing about this failure
+            // and the detail never reaches a screen: it is a developer string, and stays English.
             failure: DialFailure::Other,
-            detail: "не удалось определить адрес источника".to_string(),
+            detail: "the socket reported no source address".to_string(),
         }),
     }
 }

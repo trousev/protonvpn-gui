@@ -25,6 +25,8 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
+use crate::i18n::I18n;
+
 /// Documented gateway, from Proton's public manual-setup guide — **not** from the CLI.
 pub const GATEWAY_IP: Ipv4Addr = Ipv4Addr::new(10, 2, 0, 1);
 /// The IANA-assigned NAT-PMP port.
@@ -71,6 +73,22 @@ pub struct Mapping {
     pub lifetime: Duration,
 }
 
+/// What about the gateway's answer was wrong.
+///
+/// Kept as data rather than as a sentence: the answer is decoded on whichever thread asked, and
+/// the sentence is built by [`NatPmpError::describe`], where the locale is known. Every number here
+/// is a protocol byte count or opcode and is data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Malformed {
+    /// Fewer bytes than the RFC's fixed-size answer.
+    Length { got: usize, expected: usize },
+    /// A protocol version this client does not speak.
+    Version(u8),
+    /// A response flag or opcode that does not match the request. `expected` is absent where the
+    /// answer stands alone, as the public-address response does.
+    Opcode { got: u8, expected: Option<u8> },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatPmpError {
     Io(String),
@@ -79,39 +97,58 @@ pub enum NatPmpError {
     /// The gateway answered with a non-zero result code.
     Refused {
         code: u16,
-        message: &'static str,
     },
-    Malformed(String),
+    Malformed(Malformed),
 }
 
-impl std::fmt::Display for NatPmpError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl NatPmpError {
+    /// One line for the console note that records the lease attempt, and the reason the Overview
+    /// page's port-forwarding row gives.
+    ///
+    /// A catalogue rather than `Display`, for the reason [`crate::socks5::Closed::describe`]
+    /// gives: every one of these is shown to a person. The numbers inside them — an opcode, a
+    /// result code, a byte count — are protocol data and are never translated.
+    pub fn describe(&self, i18n: &I18n) -> String {
         match self {
-            Self::Io(e) => write!(f, "ошибка сокета: {e}"),
-            Self::Timeout => write!(
-                f,
-                "шлюз {GATEWAY_IP} не ответил на NAT-PMP запрос — проброс порта недоступен"
-            ),
-            Self::Refused { code, message } => {
-                write!(f, "шлюз отказал (код {code}: {message})")
+            Self::Io(detail) => i18n.natpmp_io(detail),
+            Self::Timeout => i18n.natpmp_timeout(GATEWAY_IP.to_string()),
+            Self::Refused { code } => {
+                i18n.natpmp_refused(*code as i64, result_message(*code, i18n))
             }
-            Self::Malformed(e) => write!(f, "неожиданный ответ шлюза: {e}"),
+            Self::Malformed(why) => i18n.natpmp_malformed(describe_malformed(why, i18n)),
         }
     }
 }
 
-impl std::error::Error for NatPmpError {}
+/// The sentence for one malformed answer, in the caller's locale.
+fn describe_malformed(why: &Malformed, i18n: &I18n) -> String {
+    match why {
+        Malformed::Length { got, expected } => {
+            i18n.natpmp_malformed_length(*got as i64, *expected as i64)
+        }
+        Malformed::Version(version) => i18n.natpmp_malformed_version(*version as i64),
+        Malformed::Opcode {
+            got,
+            expected: Some(expected),
+        } => i18n.natpmp_malformed_opcode_wanted(*got as i64, *expected as i64),
+        Malformed::Opcode {
+            got,
+            expected: None,
+        } => i18n.natpmp_malformed_opcode(*got as i64),
+    }
+}
 
-/// What the RFC's result codes mean, so the console says something a human can act on.
-fn result_message(code: u16) -> &'static str {
+/// What the RFC's result codes mean, so the console says something a human can act on. The number
+/// is printed beside the meaning by `natpmp-refused`, and is never part of it.
+fn result_message(code: u16, i18n: &I18n) -> String {
     match code {
-        0 => "успех",
-        1 => "версия протокола не поддерживается",
-        2 => "не разрешено (нужен P2P-сервер и платный план)",
-        3 => "сетевая ошибка",
-        4 => "у шлюза кончились ресурсы",
-        5 => "операция не поддерживается",
-        _ => "неизвестный код",
+        0 => i18n.natpmp_result_ok(),
+        1 => i18n.natpmp_result_version(),
+        2 => i18n.natpmp_result_not_authorized(),
+        3 => i18n.natpmp_result_network(),
+        4 => i18n.natpmp_result_resources(),
+        5 => i18n.natpmp_result_unsupported(),
+        _ => i18n.natpmp_result_unknown(),
     }
 }
 
@@ -139,26 +176,23 @@ pub fn encode_map_request(
 /// Decodes an opcode-0 response into the external address the gateway sees.
 pub fn decode_public_address_response(response: &[u8]) -> Result<IpAddr, NatPmpError> {
     if response.len() < 12 {
-        return Err(NatPmpError::Malformed(format!(
-            "ответ длиной {} байт, ожидалось 12",
-            response.len()
-        )));
+        return Err(NatPmpError::Malformed(Malformed::Length {
+            got: response.len(),
+            expected: 12,
+        }));
     }
     if response[0] != 0 {
-        return Err(NatPmpError::Malformed(format!(
-            "версия протокола {}",
-            response[0]
-        )));
+        return Err(NatPmpError::Malformed(Malformed::Version(response[0])));
     }
     if response[1] != RESPONSE_FLAG | OPCODE_PUBLIC_ADDRESS {
-        return Err(NatPmpError::Malformed(format!("опкод {}", response[1])));
+        return Err(NatPmpError::Malformed(Malformed::Opcode {
+            got: response[1],
+            expected: None,
+        }));
     }
     let code = u16::from_be_bytes([response[2], response[3]]);
     if code != 0 {
-        return Err(NatPmpError::Refused {
-            code,
-            message: result_message(code),
-        });
+        return Err(NatPmpError::Refused { code });
     }
     let octets = [response[8], response[9], response[10], response[11]];
     Ok(IpAddr::V4(Ipv4Addr::from(octets)))
@@ -167,24 +201,20 @@ pub fn decode_public_address_response(response: &[u8]) -> Result<IpAddr, NatPmpE
 /// Decodes a mapping response.
 pub fn decode_map_response(response: &[u8], expected: Protocol) -> Result<Mapping, NatPmpError> {
     if response.len() < 16 {
-        return Err(NatPmpError::Malformed(format!(
-            "ответ длиной {} байт, ожидалось 16",
-            response.len()
-        )));
+        return Err(NatPmpError::Malformed(Malformed::Length {
+            got: response.len(),
+            expected: 16,
+        }));
     }
     if response[1] != RESPONSE_FLAG | expected.opcode() {
-        return Err(NatPmpError::Malformed(format!(
-            "опкод {} вместо {}",
-            response[1],
-            RESPONSE_FLAG | expected.opcode()
-        )));
+        return Err(NatPmpError::Malformed(Malformed::Opcode {
+            got: response[1],
+            expected: Some(RESPONSE_FLAG | expected.opcode()),
+        }));
     }
     let code = u16::from_be_bytes([response[2], response[3]]);
     if code != 0 {
-        return Err(NatPmpError::Refused {
-            code,
-            message: result_message(code),
-        });
+        return Err(NatPmpError::Refused { code });
     }
     Ok(Mapping {
         internal_port: u16::from_be_bytes([response[8], response[9]]),
@@ -275,9 +305,10 @@ impl NatPmp {
             match socket.recv(&mut buffer) {
                 Ok(n) if n >= expected => return Ok(buffer[..n].to_vec()),
                 Ok(n) => {
-                    return Err(NatPmpError::Malformed(format!(
-                        "ответ длиной {n} байт, ожидалось {expected}"
-                    )));
+                    return Err(NatPmpError::Malformed(Malformed::Length {
+                        got: n,
+                        expected,
+                    }));
                 }
                 Err(_) => timeout *= 2,
             }
@@ -289,8 +320,13 @@ impl NatPmp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Locale;
     use std::net::UdpSocket;
     use std::thread;
+
+    fn english() -> I18n {
+        I18n::new(Locale::SOURCE)
+    }
 
     #[test]
     fn encodes_requests_exactly_as_the_rfc_says() {
@@ -344,12 +380,57 @@ mod tests {
         response.extend_from_slice(&2u16.to_be_bytes());
         response.extend_from_slice(&[0u8; 12]);
         match decode_map_response(&response, Protocol::Udp) {
-            Err(NatPmpError::Refused { code, message }) => {
+            Err(error @ NatPmpError::Refused { code }) => {
                 assert_eq!(code, 2);
-                assert!(message.contains("P2P"), "{message}");
+                let described = error.describe(&english());
+                assert!(described.contains("P2P"), "{described}");
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_refusal_is_worded_in_the_locale_it_is_described_in() {
+        // The point of `describe` rather than `Display`: the same error, one catalogue later, is a
+        // different sentence — and the code inside it is data in both.
+        let error = NatPmpError::Refused { code: 2 };
+        let english = error.describe(&english());
+        let russian = error.describe(&I18n::new(Locale::from_id("ru").unwrap()));
+        assert_ne!(english, russian);
+        assert!(english.contains("2"), "{english}");
+        assert!(russian.contains("2"), "{russian}");
+        assert!(
+            english.contains("P2P") && russian.contains("P2P"),
+            "{russian}"
+        );
+    }
+
+    /// A byte count is a count, and Russian declines the word for "byte" three ways. A translation
+    /// that reuses the many-form for four is the mistake this pins.
+    #[test]
+    fn a_byte_count_is_declined_and_not_merely_substituted() {
+        let russian = I18n::new(Locale::from_id("ru").unwrap());
+        let describe = |got| {
+            NatPmpError::Malformed(Malformed::Length { got, expected: 12 }).describe(&russian)
+        };
+        let one = describe(1);
+        let few = describe(4);
+        let many = describe(16);
+        assert_ne!(one, few);
+        assert_ne!(few, many);
+        for (got, line) in [(1, &one), (4, &few), (16, &many)] {
+            assert!(line.contains(&got.to_string()), "{line}");
+            assert!(line.contains("12"), "{line}");
+        }
+        // English has two forms, and the source says so.
+        assert!(
+            NatPmpError::Malformed(Malformed::Length {
+                got: 1,
+                expected: 12
+            })
+            .describe(&english())
+            .contains("1 byte long")
+        );
     }
 
     #[test]
@@ -448,6 +529,6 @@ mod tests {
         client.first_timeout = Duration::from_millis(30);
         let error = client.public_address().unwrap_err();
         assert_eq!(error, NatPmpError::Timeout);
-        assert!(error.to_string().contains("не ответил"));
+        assert!(error.describe(&english()).contains("did not answer"));
     }
 }
