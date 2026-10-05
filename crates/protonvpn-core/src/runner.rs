@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::i18n::{I18n, Locale};
 use crate::model::InvocationId;
 use crate::pty::{self, PtyStdin};
 
@@ -33,14 +34,15 @@ pub const PTY_ROWS: u16 = 40;
 /// Default patience for a non-interactive command.
 ///
 /// `connect` measured 2–4 s, `status` ~1 s. Two minutes is not a timeout anyone will hit in
-/// normal use; it exists so that a wedged child cannot leave the app saying "работаю" forever.
+/// normal use; it exists so that a wedged child cannot leave the console bar saying
+/// "working" forever.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How long the child must be silent before an unterminated line is handed over as it stands.
 ///
 /// **Measured 2026-10-01:** `protonvpn signin` writes `Password: ` — no trailing newline — and
 /// then blocks. A reader that only forwards complete lines forwards nothing at all, so the engine
-/// never sees the prompt, never writes the password, and the login sits at "работаю" forever.
+/// never sees the prompt, never writes the password, and the login sits at "working" forever.
 /// Anything the CLI leaves unterminated for this long is a prompt, not half of a line that is
 /// still being written.
 const PROMPT_IDLE: Duration = Duration::from_millis(200);
@@ -62,6 +64,12 @@ pub struct Job {
     /// Interactive children are not killed on a timer: they are waiting for a human.
     pub interactive: bool,
     pub timeout: Option<Duration>,
+    /// The language of the lines this job may produce in our own name — a failed spawn, a timeout,
+    /// a cancellation. It travels with the job rather than living in a catalogue of the runner
+    /// thread's own, because that thread outlives any language change and a sentence written after
+    /// one would be a sentence in the wrong language. `Locale::SOURCE` is what a test's stand-in
+    /// job gets.
+    pub language: Locale,
 }
 
 impl Job {
@@ -74,11 +82,17 @@ impl Job {
             cwd,
             interactive: false,
             timeout: Some(DEFAULT_TIMEOUT),
+            language: Locale::SOURCE,
         }
     }
 
     pub fn with_id(mut self, id: InvocationId) -> Self {
         self.id = id;
+        self
+    }
+
+    pub fn with_language(mut self, language: Locale) -> Self {
+        self.language = language;
         self
     }
 
@@ -260,6 +274,10 @@ fn run_one(
     stdin_slot: &Arc<Mutex<Option<PtyStdin>>>,
     cancel: &Arc<AtomicBool>,
 ) {
+    // Ours, not the CLI's: written here rather than in a catalogue this thread holds, because the
+    // two places that need it are both failures and both rare — a parse each is nothing next to a
+    // child that had to be killed. Built with the language the job was submitted in.
+    let ours = || I18n::new(job.language);
     let at = SystemTime::now();
     if events
         .send(RunnerEvent::Started { id: job.id, at })
@@ -271,10 +289,9 @@ fn run_one(
     let mut spawned = match pty::spawn(&job.argv, PTY_COLS, PTY_ROWS) {
         Ok(spawned) => spawned,
         Err(error) => {
-            let message = format!(
-                "не удалось запустить `{}`: {error}",
-                pty::command_line(&job.argv)
-            );
+            let i18n = ours();
+            let message =
+                i18n.core_runner_spawn_failed(pty::command_line(&job.argv), error.describe(&i18n));
             let _ = events.send(RunnerEvent::SpawnFailed {
                 id: job.id,
                 message,
@@ -407,13 +424,15 @@ fn run_one(
     }
 
     if cancelled || timed_out {
+        // Both lines are ours, not the CLI's, and the marker is how the transcript says so. It is
+        // part of the line rather than of the message: the program's name is not translated.
         let text = if cancelled {
-            "[protonvpn-gui] выполнение прервано по запросу пользователя".to_string()
+            format!("[protonvpn-gui] {}", ours().core_runner_cancelled())
         } else {
             let seconds = job.timeout.unwrap_or_default().as_secs();
             format!(
-                "[protonvpn-gui] команда не завершилась за {seconds} с и была прервана; \
-                 вывод выше — всё, что успел сказать CLI"
+                "[protonvpn-gui] {}",
+                ours().core_runner_timed_out(seconds as i64)
             )
         };
         let _ = events.send(RunnerEvent::Line {
@@ -467,6 +486,30 @@ mod tests {
             }
         }
         events
+    }
+
+    fn english() -> I18n {
+        I18n::new(crate::i18n::Locale::SOURCE)
+    }
+
+    /// The one place a count of ours reaches a sentence, and the reason the catalogue selects on
+    /// CLDR categories rather than on an English `[one]`/`[other]`: Russian needs three forms, and
+    /// a translation with two of them declines nothing.
+    #[test]
+    fn a_timeout_declines_its_seconds_in_every_language_it_has() {
+        let russian = I18n::new(crate::i18n::Locale::from_id("ru").unwrap());
+        let one = russian.core_runner_timed_out(1);
+        let few = russian.core_runner_timed_out(3);
+        let many = russian.core_runner_timed_out(5);
+
+        assert_ne!(one, few);
+        assert_ne!(few, many);
+        for (seconds, line) in [(1, &one), (3, &few), (5, &many)] {
+            assert!(line.contains(&seconds.to_string()), "{line}");
+        }
+        // And the source language really is the source: one second, two seconds.
+        assert!(english().core_runner_timed_out(1).contains("1 second"));
+        assert!(english().core_runner_timed_out(5).contains("5 seconds"));
     }
 
     fn sh(script: &str) -> Vec<String> {
@@ -540,7 +583,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("прервано по запросу")),
+                .any(|line| line.contains("interrupted at the user's request")),
             "{lines:?}"
         );
         assert!(!lines.iter().any(|line| line == "never"), "{lines:?}");
@@ -637,9 +680,9 @@ mod tests {
         // The secret is in the child's own echo only because this stand-in echoes it; what matters
         // is that the runner never fabricates a line containing it.
         assert!(
-            !events.iter().any(
-                |e| matches!(e, RunnerEvent::Line { text, .. } if text.contains("не удалось"))
-            ),
+            !events
+                .iter()
+                .any(|e| matches!(e, RunnerEvent::Line { text, .. } if text.contains("could not"))),
             "unexpected runner error: {events:?}"
         );
         assert_eq!(exit_code(&events), Some(0));
@@ -667,7 +710,7 @@ mod tests {
             })
         ));
         assert!(
-            lines(&events).iter().any(|l| l.contains("была прервана")),
+            lines(&events).iter().any(|l| l.contains("was interrupted")),
             "the interruption must be visible in the transcript: {events:?}"
         );
     }
@@ -688,6 +731,6 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("expected SpawnFailed among {events:?}"));
-        assert!(failure.contains("не удалось запустить"), "{failure}");
+        assert!(failure.contains("could not start"), "{failure}");
     }
 }

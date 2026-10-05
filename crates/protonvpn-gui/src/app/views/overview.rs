@@ -323,7 +323,7 @@ fn saved_row<'a>(app: &'a App, saved: &'a SavedConnection) -> Element<'a, Messag
     };
 
     let badges: Element<'_, Message> = row(saved
-        .badges()
+        .badges(&app.i18n)
         .into_iter()
         .map(|badge| widgets::badge(badge, Tone::Neutral))
         .collect::<Vec<_>>())

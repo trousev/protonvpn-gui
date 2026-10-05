@@ -445,7 +445,7 @@ mod tests {
             PathBuf::from("/tmp"),
             SystemTime::now(),
         );
-        bus.push_line(note, "аренда продлена", SystemTime::now());
+        bus.push_line(note, "lease renewed", SystemTime::now());
 
         bus.begin(
             queued,
@@ -457,7 +457,7 @@ mod tests {
         );
         bus.push_line(queued, "Account: 'trousev'", SystemTime::now());
 
-        assert_eq!(bus.get(note).unwrap().output(), "аренда продлена\n");
+        assert_eq!(bus.get(note).unwrap().output(), "lease renewed\n");
         assert_eq!(bus.get(queued).unwrap().output(), "Account: 'trousev'\n");
     }
 

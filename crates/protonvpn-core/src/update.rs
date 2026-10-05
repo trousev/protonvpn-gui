@@ -111,13 +111,14 @@ impl std::str::FromStr for Version {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseVersionError(String);
 
-impl fmt::Display for ParseVersionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "не версия вида X.Y.N: {}", self.0)
+impl ParseVersionError {
+    /// What was wrong with the string. A catalogue rather than `Display`, because the only reader
+    /// of this sentence is a person — a `Version::from_str` that rejected something has to be able
+    /// to say what. $text is the string as it arrived, verbatim.
+    pub fn describe(&self, i18n: &I18n) -> String {
+        i18n.update_error_version_parse(&self.0)
     }
 }
-
-impl std::error::Error for ParseVersionError {}
 
 /// The file listing the checksums of the latest release. `latest/download/<asset>` is a permanent
 /// URL: it follows to whatever was published most recently, so no API, no rate limit and no schema
@@ -188,7 +189,7 @@ pub fn parse_sums(body: &str) -> Result<Release, UpdateError> {
     }
 
     Err(UpdateError::NoAsset(format!(
-        "в {SUMS_ASSET} нет строки вида {ASSET_PREFIX}X.Y.N{want_suffix}"
+        "{ASSET_PREFIX}X.Y.N{want_suffix}"
     )))
 }
 
@@ -226,14 +227,16 @@ pub enum UpdateError {
         code: Option<i32>,
         stderr: String,
     },
-    /// The release page answered, but there is nothing in it this build could become.
+    /// The release page answered, but there is nothing in it this build could become. The string is
+    /// the name shape that was looked for — `ProtonVPN-GUI-X.Y.N-x86_64.AppImage` — and is data.
     NoAsset(String),
     /// The bytes are not the bytes the release published a checksum for.
     ChecksumMismatch {
         expected: String,
         got: String,
     },
-    /// Bytes that hash correctly and are still not a type-2 AppImage.
+    /// Bytes that hash correctly and are still not a type-2 AppImage. The string is the first bytes
+    /// rendered for reading, and is data.
     NotAnAppImage(String),
     /// Nowhere to put the new image, so there is no point downloading it.
     NotWritable(String),
@@ -241,36 +244,31 @@ pub enum UpdateError {
     Io(String),
 }
 
-impl fmt::Display for UpdateError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl UpdateError {
+    /// One line under the `curl …` invocation in the console, and the reason on the Settings →
+    /// Updates card.
+    ///
+    /// A catalogue rather than `Display`, for the reason [`crate::socks5::Closed::describe`] gives:
+    /// every one of these is read by a person. The values inside them — URLs, versions, checksums,
+    /// paths, `curl`'s stderr — are data and are never translated.
+    pub fn describe(&self, i18n: &I18n) -> String {
         match self {
-            Self::CurlMissing(e) => write!(f, "curl недоступен: {e}"),
+            Self::CurlMissing(detail) => i18n.update_error_curl_missing(detail),
+            Self::CurlFailed { code, stderr } if stderr.trim().is_empty() => {
+                i18n.update_error_curl_failed(code.unwrap_or(-1) as i64)
+            }
             Self::CurlFailed { code, stderr } => {
-                write!(f, "curl завершился с кодом {}", code.unwrap_or(-1))?;
-                if !stderr.trim().is_empty() {
-                    write!(f, ": {}", stderr.trim())?;
-                }
-                Ok(())
+                i18n.update_error_curl_failed_detail(code.unwrap_or(-1) as i64, stderr.trim())
             }
-            Self::NoAsset(why) => write!(f, "нечего устанавливать: {why}"),
-            Self::ChecksumMismatch { expected, got } => write!(
-                f,
-                "контрольная сумма не совпала: ожидалась {expected}, получена {got}"
-            ),
-            Self::NotAnAppImage(why) => write!(f, "скачанное не похоже на AppImage: {why}"),
-            Self::NotWritable(why) => {
-                write!(
-                    f,
-                    "не могу записать новый образ рядом с установленным: {why}"
-                )
-            }
-            Self::Cancelled => write!(f, "загрузка отменена"),
-            Self::Io(e) => write!(f, "ошибка ввода-вывода: {e}"),
+            Self::NoAsset(wanted) => i18n.update_error_no_asset(SUMS_ASSET, wanted),
+            Self::ChecksumMismatch { expected, got } => i18n.update_error_checksum(expected, got),
+            Self::NotAnAppImage(head) => i18n.update_error_not_appimage(head),
+            Self::NotWritable(detail) => i18n.update_error_not_writable(detail),
+            Self::Cancelled => i18n.update_error_cancelled(),
+            Self::Io(detail) => i18n.update_error_io(detail),
         }
     }
 }
-
-impl std::error::Error for UpdateError {}
 
 /// What the release page said.
 ///
@@ -282,8 +280,9 @@ pub enum Finding {
     Release(Release),
     /// Nothing installable, with the reason, because the reason is the useful part: a release
     /// published before the asset's name carried a version is a different situation from a release
-    /// built for another architecture.
-    Nothing(String),
+    /// built for another architecture. The reason is an [`UpdateError`] — always its `NoAsset` —
+    /// so it is worded where the locale is known, not here.
+    Nothing(UpdateError),
 }
 
 /// Asks the release page what the latest version is. One `curl`, one URL, no user data.
@@ -291,7 +290,7 @@ pub fn latest(curl: &str) -> Result<Finding, UpdateError> {
     let body = curl_text(curl, &sums_url())?;
     match parse_sums(&body) {
         Ok(release) => Ok(Finding::Release(release)),
-        Err(UpdateError::NoAsset(why)) => Ok(Finding::Nothing(why)),
+        Err(error @ UpdateError::NoAsset(_)) => Ok(Finding::Nothing(error)),
         Err(other) => Err(other),
     }
 }
@@ -364,7 +363,7 @@ fn verify(path: &Path, release: &Release) -> Result<(), UpdateError> {
 
     let head = read_head(path, 12)?;
     if !looks_like_appimage(&head) {
-        return Err(UpdateError::NotAnAppImage(describe_head(&head)));
+        return Err(UpdateError::NotAnAppImage(printable_head(&head)));
     }
     Ok(())
 }
@@ -723,14 +722,17 @@ pub fn looks_like_appimage(head: &[u8]) -> bool {
     head.len() >= 11 && head.starts_with(b"\x7fELF") && &head[8..11] == b"AI\x02"
 }
 
-fn describe_head(head: &[u8]) -> String {
+/// The first bytes of a rejected download, rendered for reading. Data only: the sentence around it
+/// is the catalogue's, because this is the one place where the console has to be believable about
+/// what actually arrived — a captive portal's HTML, not an AppImage.
+fn printable_head(head: &[u8]) -> String {
     let text = String::from_utf8_lossy(head);
     let printable: String = text
         .chars()
         .take(16)
         .map(|c| if c.is_ascii_graphic() { c } else { '.' })
         .collect();
-    format!("первые байты: {printable:?}")
+    format!("{printable:?}")
 }
 
 fn make_executable(staged: &Path, like: &Path) -> Result<(), UpdateError> {

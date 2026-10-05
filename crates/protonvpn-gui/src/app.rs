@@ -70,7 +70,9 @@ fn boot() -> (App, Task<Message>) {
     let store = ConfigStore::default();
     let (config, config_error) = match store.load() {
         Ok(config) => (config, None),
-        Err(error) => (Config::default(), Some(error.to_string())),
+        // Kept as an error rather than as a string: the sentence has to wait for the locale, which
+        // is only known once the config has been read — or has failed to be.
+        Err(error) => (Config::default(), Some(error)),
     };
 
     // Keep the autostart entry in step with the config on every start: a user who deletes the
@@ -94,6 +96,7 @@ fn boot() -> (App, Task<Message>) {
     // One catalogue for the window, one for the tray and one for the engine: a `FluentBundle` is
     // `Send` but not `Sync`, so each thread owns its own instead of sharing one behind a lock.
     let locale = config.language.unwrap_or_else(Locale::detect);
+    let config_error = config_error.map(|error| error.describe(&I18n::new(locale)));
     let start_minimized = config.start_minimized;
     // "Connect at startup" connects the *selected connection*, because that is the only thing the
     // app has that means "what should `protonvpn connect` be". It is a request, not a command: the
