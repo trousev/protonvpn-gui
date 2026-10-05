@@ -242,6 +242,23 @@ readable and copyable.
 > ([`architecture.md`](architecture.md) §12) — and the GUI runs on iced 0.14, which no longer
 > leaves a ghost "winit window" in Alt+Tab (§12.1).
 
+### Phase 3.5 — The AppImage updates itself — **done**
+
+> An AppImage has no package manager behind it, and the file that would have to be replaced is the
+> one currently running. The application now does that within bounds: it asks its own release page
+> for `SHA256SUMS` (one permanent URL, no GitHub API, no rate limit), reads the version out of the
+> asset's own name, downloads the image, checks it against that checksum and against the type-2
+> AppImage marker, and renames it over the running one — hard link first, so the installed path is
+> never missing a file, and the previous image stays as `<name>.old` until the next start proves the
+> new one works. **Nothing downloaded is ever executed.** Four policies, `скачивать` by default,
+> every step still available as a button; the check and the download run off the engine's thread and
+> off the runner's queue, and cancelling kills `curl` and deletes the partial file. The version is
+> defined once, in `scripts/version.sh`, baked into the binary and printed by `--version`, and the
+> release refuses to publish an image whose name disagrees with it. What the checksum does *not*
+> prove — authorship — is written down in [`SECURITY.md`](../SECURITY.md) rather than implied, with
+> the attestation command that does. Sanctioned exception #4
+> ([`architecture.md`](architecture.md) §0, §14).
+
 ### Phase 3 (original notes)
 
 **AppImage only. Flatpak is dropped deliberately** — the sandbox would fight both the host

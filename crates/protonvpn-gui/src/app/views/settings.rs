@@ -648,6 +648,10 @@ fn updates_card(app: &App) -> Element<'_, Message> {
         update.phase,
         UpdatePhase::Checking | UpdatePhase::Downloading { .. }
     );
+    // Cancelling is offered while bytes are moving, and only then: a check is one small file and
+    // over in a moment, so a button that visibly did nothing would be worse than no button.
+    let downloading = matches!(update.phase, UpdatePhase::Downloading { .. });
+    let staged = matches!(update.phase, UpdatePhase::Staged { .. });
     let installed = matches!(update.phase, UpdatePhase::Installed { .. });
     let behind = match (update.current, update.latest) {
         (Some(current), Some(latest)) => current < latest,
@@ -676,7 +680,7 @@ fn updates_card(app: &App) -> Element<'_, Message> {
     .spacing(8)
     .align_y(Alignment::Center);
 
-    if busy {
+    if downloading {
         buttons = buttons.push(
             button(text("Отменить").size(13))
                 .padding(Padding::from([8, 14]))
@@ -685,10 +689,17 @@ fn updates_card(app: &App) -> Element<'_, Message> {
         );
     } else if behind && update.replaceable && !installed {
         buttons = buttons.push(
-            button(text("Скачать и установить").size(13))
-                .padding(Padding::from([8, 14]))
-                .style(theme::filled(theme::ACCENT))
-                .on_press(Message::UpdateInstall),
+            button(
+                text(if staged {
+                    "Установить"
+                } else {
+                    "Скачать и установить"
+                })
+                .size(13),
+            )
+            .padding(Padding::from([8, 14]))
+            .style(theme::filled(theme::ACCENT))
+            .on_press(Message::UpdateInstall),
         );
     }
     if behind && !update.dismissed && !installed {
