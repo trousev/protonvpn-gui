@@ -32,11 +32,14 @@ pub(crate) fn status_tone(status: &ConnectionStatus) -> widgets::Tone {
 
 /// The left rail: where you are, what the CLI last said, and who you are.
 pub(crate) fn sidebar(app: &App) -> Element<'_, Message> {
+    // The brand block. The monogram is a mark rather than a word and is not translated; the name
+    // and the line under it are the catalogue's, and the name is the same string the window title
+    // and the tray item carry.
     let brand = row![
         widgets::monogram("PV", widgets::Tone::Accent),
         column![
-            text("ProtonVPN").size(15),
-            widgets::faint("обёртка над CLI"),
+            text(app.i18n.app_name()).size(15),
+            widgets::faint(app.i18n.chrome_brand_subtitle()),
         ]
         .spacing(1),
     ]
@@ -51,7 +54,7 @@ pub(crate) fn sidebar(app: &App) -> Element<'_, Message> {
                 // the icon characters a design mock-up can use, and a substituted box is worse
                 // than no icon at all.
                 nav_marker(active),
-                text(page.label()).size(14),
+                text(page.label(&app.i18n)).size(14),
             ]
             .spacing(10)
             .align_y(Alignment::Center),
@@ -79,11 +82,13 @@ pub(crate) fn sidebar(app: &App) -> Element<'_, Message> {
                 avatar(name),
                 column![
                     text(name.to_string()).size(13),
+                    // The command that named the account, spelled as `protonvpn` spells it: a
+                    // command line is data, like every other byte the console shows.
                     widgets::faint("protonvpn info"),
                 ]
                 .spacing(1)
                 .width(Length::Fill),
-                button(text("Выйти").size(12))
+                button(text(app.i18n.chrome_sign_out()).size(12))
                     .padding(Padding::from([4, 8]))
                     .style(theme::ghost(theme::TEXT_MUTED, false))
                     .on_press(Message::Logout),
@@ -94,11 +99,11 @@ pub(crate) fn sidebar(app: &App) -> Element<'_, Message> {
         .spacing(6)
         .into(),
         None => column![
-            widgets::faint("Аккаунт ещё не назван"),
+            widgets::faint(app.i18n.chrome_account_unnamed()),
             widgets::faint(app.account_age().unwrap_or_else(|| "—".into())),
             // Never leave the user with no way to sign in: the gate above is a claim about what
             // the CLI said, and a claim can be wrong.
-            button(text("Войти").size(12))
+            button(text(app.i18n.chrome_sign_in()).size(12))
                 .padding(Padding::from([4, 8]))
                 .style(theme::ghost(theme::ACCENT, false))
                 .on_press(Message::SignInRequested),
@@ -204,13 +209,14 @@ fn avatar<'a>(name: &'a str) -> Element<'a, Message> {
 
 /// The dismissible remark bar. It is ours, not the CLI's, so it never pretends to be output.
 pub(crate) fn notice_bar<'a>(
+    app: &'a App,
     notice: &'a str,
     content: Element<'a, Message>,
 ) -> Element<'a, Message> {
     let bar = container(
         row![
             text(notice).size(13).width(Length::Fill),
-            button(text("ок").size(12))
+            button(text(app.i18n.chrome_notice_dismiss()).size(12))
                 .padding(Padding::from([4, 10]))
                 .style(theme::outlined(theme::BORDER, theme::TEXT_MUTED))
                 .on_press(Message::DismissNotice),
