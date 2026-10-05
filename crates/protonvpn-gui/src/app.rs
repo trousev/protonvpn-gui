@@ -27,6 +27,7 @@ use iced::widget::{operation, scrollable};
 use iced::{Element, Subscription, Task};
 use iced::{clipboard, exit, time, window};
 
+use protonvpn_core::config::UpdatePolicy;
 use protonvpn_core::config::{Config, ConfigStore, SYSTEM_FASTEST, SavedConnection};
 use protonvpn_core::engine::{EngineHandle, EngineOptions, Request, Shared, TrayView, UiCommand};
 use protonvpn_core::launcher::Intent;
@@ -99,6 +100,7 @@ fn boot() -> (App, Task<Message>) {
         status: protonvpn_core::model::ConnectionStatus::Unknown,
         detail: None,
         age_text: "updated just now".into(),
+        update: None,
     };
     let tray = tray::spawn(tray_commands, initial_view);
     let tray_available = tray.is_some();
@@ -120,6 +122,9 @@ fn boot() -> (App, Task<Message>) {
     let start_in_tray = start_minimized && tray_available;
 
     let mut options = EngineOptions::new(store, config.clone());
+    // What this build says it is, baked in by the build script (`scripts/version.sh`). The engine
+    // compares it against the latest release; a build without one says so instead of guessing.
+    options.version = crate::version::current();
     options.tray_available = tray_available;
     options.tray = presenter.as_ref().map(|presenter| {
         Box::new(SharedPresenter(Arc::clone(presenter)))
@@ -483,6 +488,15 @@ pub enum Message {
     Socks5Verify(String),
     Socks5Apply,
     CopySocks5,
+    /// The AppImage updater (exception #4). The policy is a setting; everything else is an
+    /// explicit request, which is why each of these is its own message.
+    UpdatePolicySelected(UpdatePolicy),
+    UpdateCheckNow,
+    UpdateInstall,
+    UpdateCancel,
+    UpdateDismiss,
+    /// The tray's update item: show the window on the card that explains it.
+    ShowUpdate,
     DismissNotice,
 }
 
@@ -986,6 +1000,39 @@ impl App {
                 self.copied_socks5_at = Some(Instant::now());
                 clipboard::write(self.socks5_address_text())
             }
+            Message::UpdatePolicySelected(policy) => {
+                let mut config = self.config.clone();
+                config.update.policy = policy;
+                self.config = config.clone();
+                // The engine owns the file. Switching the policy on is a request to look, and the
+                // engine takes that as one instead of waiting for the next day.
+                self.engine.send(Request::SaveConfig(Box::new(config)));
+                Task::none()
+            }
+            Message::UpdateCheckNow => {
+                self.engine.send(Request::UpdateCheck);
+                Task::none()
+            }
+            Message::UpdateInstall => {
+                self.engine.send(Request::UpdateInstall);
+                Task::none()
+            }
+            Message::UpdateCancel => {
+                self.engine.send(Request::UpdateCancel);
+                Task::none()
+            }
+            Message::UpdateDismiss => {
+                self.engine.send(Request::UpdateDismiss);
+                Task::none()
+            }
+            Message::ShowUpdate => {
+                // The tray item said "обновление 0.1.43", so the click lands on the card that
+                // explains it — and the window comes back, exactly as «Открыть окно» does.
+                self.page = Page::Settings;
+                self.settings_tab = SettingsTab::General;
+                self.ensure_settings();
+                self.update(Message::ShowWindow)
+            }
             Message::DismissNotice => {
                 self.notice = None;
                 Task::none()
@@ -1000,6 +1047,7 @@ impl App {
         while let Ok(command) = self.tray_commands.try_recv() {
             match command {
                 TrayCommand::Show => tasks.push(Task::done(Message::ShowWindow)),
+                TrayCommand::ShowUpdate => tasks.push(Task::done(Message::ShowUpdate)),
                 TrayCommand::Quit => tasks.push(Task::done(Message::Quit)),
                 TrayCommand::Connect => self
                     .engine
@@ -1466,6 +1514,86 @@ mod tests {
         enabled.socks5.enabled = true;
         app.config = enabled;
         app.settings_tab = SettingsTab::Proxy;
+        let _ = views::settings::view(&app);
+    }
+
+    /// The update card has a state for every step of the updater, and every one of them has to
+    /// build: a view that panics is a window that never opens (`docs/architecture.md` §14). The
+    /// states that matter most are the two a status line usually gets wrong — "downloaded" is not
+    /// "installed", and "installed" is not "running".
+    #[test]
+    fn every_update_state_renders() {
+        use protonvpn_core::engine::{UpdatePhase, UpdateView};
+        use protonvpn_core::update::Version;
+        use std::time::SystemTime;
+
+        let dir = std::env::temp_dir().join(format!("protonvpn-gui-update-{}", std::process::id()));
+        let config = Config {
+            probe_enabled: false,
+            ..Default::default()
+        };
+        let mut options =
+            EngineOptions::new(ConfigStore::at(dir.join("config.json")), config.clone());
+        options.program = dir.join("no-such-cli").to_string_lossy().into_owned();
+        let engine = protonvpn_core::engine::spawn(options);
+        let (_tx, rx) = std::sync::mpsc::channel::<TrayCommand>();
+        let mut app = App::new(engine, config, rx, None, window::Settings::default());
+        app.settings_tab = SettingsTab::General;
+
+        let current = Version::parse("0.1.20").unwrap();
+        let latest = Version::parse("0.1.21").unwrap();
+        let older = Version::parse("0.1.19").unwrap();
+
+        let phases = [
+            UpdatePhase::Idle,
+            UpdatePhase::Checking,
+            UpdatePhase::Downloading {
+                received: 3_000_000,
+                total: Some(70_000_000),
+            },
+            // A server that announced no length: progress without a fraction.
+            UpdatePhase::Downloading {
+                received: 3_000_000,
+                total: None,
+            },
+            UpdatePhase::Staged { version: latest },
+            UpdatePhase::Installed { version: latest },
+        ];
+
+        for phase in phases {
+            for (current, latest, replaceable) in [
+                (Some(current), None, true),
+                (Some(current), Some(latest), true),
+                // A build from `main` between releases: ahead, and not offered a downgrade.
+                (Some(latest), Some(older), true),
+                // Not an AppImage: the card has to say so instead of offering a button.
+                (Some(current), Some(latest), false),
+                // A development build: nothing to compare.
+                (None, Some(latest), false),
+            ] {
+                app.shared.update = UpdateView {
+                    current,
+                    latest,
+                    checked_at: Some(SystemTime::now()),
+                    error: None,
+                    phase: phase.clone(),
+                    replaceable,
+                    dismissed: false,
+                };
+                let _ = views::settings::view(&app);
+            }
+        }
+
+        // And with a failure to report and a version the user asked not to hear about.
+        app.shared.update = UpdateView {
+            current: Some(current),
+            latest: Some(latest),
+            checked_at: Some(SystemTime::now()),
+            error: Some("curl завершился с кодом 6".into()),
+            phase: UpdatePhase::Idle,
+            replaceable: true,
+            dismissed: true,
+        };
         let _ = views::settings::view(&app);
     }
 

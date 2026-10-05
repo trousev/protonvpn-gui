@@ -10,8 +10,17 @@
 //! to compare itself with, and inventing a version for it would have it replace itself with the
 //! latest release.
 
+use protonvpn_core::update::Version;
+
 /// The raw string the build script baked in, empty when there was none.
 pub const BAKED: &str = env!("PROTONVPN_GUI_VERSION");
+
+/// The version to compare against a release, if this build has one. The engine is given this and
+/// decides nothing itself: a build with no version reports the latest release instead of treating
+/// itself as older than it.
+pub fn current() -> Option<Version> {
+    Version::parse(BAKED)
+}
 
 /// For `--version`: one line a script can read, not a sentence.
 pub fn cli_line() -> String {
@@ -19,5 +28,14 @@ pub fn cli_line() -> String {
         format!("protonvpn-gui unversioned ({})", env!("CARGO_PKG_VERSION"))
     } else {
         format!("protonvpn-gui {BAKED}")
+    }
+}
+
+/// For the settings page, where there is room to say why the number is missing.
+pub fn label() -> &'static str {
+    if BAKED.is_empty() {
+        "сборка не из релиза"
+    } else {
+        BAKED
     }
 }

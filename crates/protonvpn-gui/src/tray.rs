@@ -18,8 +18,12 @@ use std::sync::mpsc::Sender;
 
 use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::{MenuItem, StandardItem};
+#[cfg(test)]
+use protonvpn_core::engine::TrayUpdate;
 use protonvpn_core::engine::TrayView;
 use protonvpn_core::model::ConnectionStatus;
+#[cfg(test)]
+use protonvpn_core::update::Version;
 
 /// Size of the generated icon. StatusNotifierItems are usually rendered at 22 px.
 const ICON_SIZE: i32 = 22;
@@ -61,6 +65,9 @@ const STRIKE_SLOPE: f32 = 1.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
     Show,
+    /// Open the window on the update, rather than on whatever page it was left on: the menu item
+    /// said "обновление 0.1.43", and a click that lands somewhere else is a click that lied.
+    ShowUpdate,
     Connect,
     Disconnect,
     Quit,
@@ -104,7 +111,7 @@ impl ksni::Tray for ProtonTray {
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let connected = self.view.status.is_connected();
-        vec![
+        let mut items: Vec<MenuItem<Self>> = vec![
             StandardItem {
                 label: format!("Статус: {}", self.view.status.label()),
                 enabled: false,
@@ -157,7 +164,32 @@ impl ksni::Tray for ProtonTray {
                 ..Default::default()
             }
             .into(),
-        ]
+        ];
+
+        // An update is a menu item and not a notification: it is there to be found, never to
+        // interrupt (`docs/architecture.md` §9, §14). It says which of the two true things it is —
+        // ready and waiting for a restart, or merely available.
+        if let Some(update) = &self.view.update {
+            let label = if update.applied {
+                format!("Обновление {} — перезапустите", update.version)
+            } else {
+                format!("Обновление {}", update.version)
+            };
+            items.insert(
+                items.len() - 1,
+                StandardItem {
+                    label,
+                    icon_name: "system-software-update".into(),
+                    activate: Box::new(|tray: &mut Self| {
+                        let _ = tray.tx.send(TrayCommand::ShowUpdate);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+
+        items
     }
 }
 
@@ -298,6 +330,7 @@ mod tests {
             status,
             detail: None,
             age_text: "updated just now".into(),
+            update: None,
         }
     }
 
@@ -439,6 +472,7 @@ mod tests {
                 status: ConnectionStatus::Connected(Default::default()),
                 detail: Some("NL#818 · Amsterdam, Netherlands".into()),
                 age_text: "updated 3 mins ago".into(),
+                update: None,
             },
         };
         let tooltip = tray.tool_tip();
@@ -467,6 +501,60 @@ mod tests {
         assert!(labels.iter().any(|l| l.contains("Отключиться")));
         assert!(labels.iter().any(|l| l.contains("Открыть окно")));
         assert!(labels.iter().any(|l| l.contains("Выход")));
+    }
+
+    fn labels(tray: &ProtonTray) -> Vec<String> {
+        tray.menu()
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Standard(standard) => Some(standard.label.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_update_is_a_menu_item_that_says_which_of_the_two_things_it_is() {
+        let available = ProtonTray {
+            tx: std::sync::mpsc::channel().0,
+            view: TrayView {
+                update: Some(TrayUpdate {
+                    version: Version::parse("0.1.43").unwrap(),
+                    applied: false,
+                }),
+                ..view(ConnectionStatus::Disconnected)
+            },
+        };
+        let available_labels = labels(&available);
+        assert!(
+            available_labels.iter().any(|l| l == "Обновление 0.1.43"),
+            "{available_labels:?}"
+        );
+        // Above "Выход", and never instead of it.
+        assert_eq!(available_labels.last().map(String::as_str), Some("Выход"));
+
+        let applied = ProtonTray {
+            tx: std::sync::mpsc::channel().0,
+            view: TrayView {
+                update: Some(TrayUpdate {
+                    version: Version::parse("0.1.43").unwrap(),
+                    applied: true,
+                }),
+                ..view(ConnectionStatus::Disconnected)
+            },
+        };
+        let applied_labels = labels(&applied);
+        assert!(
+            applied_labels.iter().any(|l| l.contains("перезапустите")),
+            "{applied_labels:?}"
+        );
+
+        // And nothing at all when there is nothing to say.
+        let quiet = labels(&ProtonTray {
+            tx: std::sync::mpsc::channel().0,
+            view: view(ConnectionStatus::Disconnected),
+        });
+        assert!(!quiet.iter().any(|l| l.contains("Обновление")), "{quiet:?}");
     }
 
     #[test]

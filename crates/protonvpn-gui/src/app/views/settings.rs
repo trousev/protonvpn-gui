@@ -7,12 +7,15 @@
 //! succeeding is not evidence that the CLI agreed (`docs/architecture.md` §5).
 
 use iced::widget::{
-    Space, button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
+    Space, button, checkbox, column, container, pick_list, radio, row, scrollable, text, text_input,
 };
 use iced::{Alignment, Element, Length, Padding, Theme};
 
-use protonvpn_core::model::Setting;
+use protonvpn_core::config::UpdatePolicy;
+use protonvpn_core::engine::{UpdatePhase, UpdateView};
+use protonvpn_core::model::{Setting, render_age};
 use protonvpn_core::socks5::{Closed, GateState};
+use protonvpn_core::update::human_bytes;
 
 use crate::app::{App, AppToggle, Message, SettingsTab, setting_label, setting_values};
 use crate::theme;
@@ -90,6 +93,11 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
     let mut content = column![].spacing(14);
     if !cli_keys(app.settings_tab).is_empty() {
         content = content.push(cli_card(app, app.settings_tab));
+    }
+    // First on «Общие», because it is the one card that may need an answer today — and because the
+    // tray's update item lands here.
+    if app.settings_tab == SettingsTab::General {
+        content = content.push(updates_card(app));
     }
     content = content.push(app_card(app, app.settings_tab));
 
@@ -608,16 +616,188 @@ fn socks5_card(app: &App) -> Element<'_, Message> {
     widgets::card(content)
 }
 
-fn human_bytes(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-    let bytes = bytes as f64;
-    if bytes < KIB {
-        format!("{} Б", bytes as u64)
-    } else if bytes < MIB {
-        format!("{:.1} КиБ", bytes / KIB)
-    } else {
-        format!("{:.1} МиБ", bytes / MIB)
+// --- updates (exception #4) ------------------------------------------------------------------
+
+/// Every policy, in the order the card shows them: from "leave me alone" to "do everything".
+const UPDATE_POLICIES: [UpdatePolicy; 4] = [
+    UpdatePolicy::Off,
+    UpdatePolicy::Notify,
+    UpdatePolicy::Download,
+    UpdatePolicy::Install,
+];
+
+fn policy_label(policy: UpdatePolicy) -> &'static str {
+    match policy {
+        UpdatePolicy::Off => "не проверять",
+        UpdatePolicy::Notify => "только сообщать",
+        UpdatePolicy::Download => "скачивать",
+        UpdatePolicy::Install => "скачивать и ставить",
+    }
+}
+
+/// The AppImage updater — exception #4 (`docs/architecture.md` §14).
+///
+/// The card answers three questions in order: what this build is, what the release page last said,
+/// and what the application may do about it without being asked. The state line is the point of it:
+/// it says which true thing is the case, including the two that are easy to lie about — "a verified
+/// image is waiting for a restart" and "this build is not an AppImage and cannot replace itself".
+fn updates_card(app: &App) -> Element<'_, Message> {
+    let update = &app.shared.update;
+    let (tone, headline) = update_headline(update);
+    let busy = matches!(
+        update.phase,
+        UpdatePhase::Checking | UpdatePhase::Downloading { .. }
+    );
+    let installed = matches!(update.phase, UpdatePhase::Installed { .. });
+    let behind = match (update.current, update.latest) {
+        (Some(current), Some(latest)) => current < latest,
+        _ => false,
+    };
+
+    let mut checked = format!("Версия: {}", crate::version::label());
+    match update.checked_at {
+        Some(at) => checked.push_str(&format!(
+            " · страница релизов: {}",
+            render_age(
+                std::time::SystemTime::now()
+                    .duration_since(at)
+                    .unwrap_or_default()
+            )
+        )),
+        None => checked.push_str(" · страницу релизов ещё не спрашивали"),
+    }
+
+    let mut buttons = row![
+        button(text("Проверить сейчас").size(13))
+            .padding(Padding::from([8, 14]))
+            .style(theme::outlined(theme::BORDER, theme::TEXT))
+            .on_press_maybe((!busy).then_some(Message::UpdateCheckNow)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    if busy {
+        buttons = buttons.push(
+            button(text("Отменить").size(13))
+                .padding(Padding::from([8, 14]))
+                .style(theme::outlined(theme::BORDER, theme::DANGER))
+                .on_press(Message::UpdateCancel),
+        );
+    } else if behind && update.replaceable && !installed {
+        buttons = buttons.push(
+            button(text("Скачать и установить").size(13))
+                .padding(Padding::from([8, 14]))
+                .style(theme::filled(theme::ACCENT))
+                .on_press(Message::UpdateInstall),
+        );
+    }
+    if behind && !update.dismissed && !installed {
+        buttons = buttons.push(
+            button(text("Не напоминать").size(12))
+                .padding(Padding::from([6, 12]))
+                .style(theme::bare())
+                .on_press(Message::UpdateDismiss),
+        );
+    }
+
+    let mut options = row![].spacing(18).align_y(Alignment::Center);
+    for policy in UPDATE_POLICIES {
+        options = options.push(
+            radio(
+                policy_label(policy),
+                policy,
+                Some(app.config.update.policy),
+                Message::UpdatePolicySelected,
+            )
+            .text_size(13)
+            .size(15),
+        );
+    }
+
+    let mut content = column![
+        widgets::eyebrow("Приложение · Обновления"),
+        widgets::muted(
+            "AppImage не обновляет никто, кроме него самого: приложение спрашивает свою страницу \
+             релизов, сверяет скачанное с SHA256SUMS из того же релиза и подменяет файл на месте. \
+             Скачанное никогда не запускается само — новая версия заработает при следующем \
+             запуске, а предыдущая остаётся рядом как <имя>.old на один запуск."
+        ),
+        options,
+        widgets::faint(checked),
+        widgets::separator(),
+        row![
+            widgets::status_chip(tone, headline),
+            Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
+        ]
+        .align_y(Alignment::Center),
+        buttons,
+        widgets::faint(
+            "Проверка — раз в сутки и через десять секунд после запуска; политика решает, что \
+             приложение делает само, а кнопки работают всегда. Новая версия начинает работать \
+             после перезапуска: подмена не трогает уже запущенный процесс."
+        ),
+    ]
+    .spacing(12);
+
+    if let Some(error) = &update.error {
+        content = content.push(widgets::note(format!(
+            "Последняя попытка не удалась: {error}"
+        )));
+    }
+    if !update.replaceable {
+        content = content.push(widgets::note(
+            "Эта сборка не AppImage (или запущена не из образа): подменить себя она не может. \
+             Обновление придётся скачать со страницы релизов вручную.",
+        ));
+    }
+    content = content.push(widgets::faint(
+        "SHA256SUMS закрывает обрыв, порчу и зеркало, отдающее вчерашний образ, но не подмену на \
+         стороне GitHub: подлинность проверяется отдельно, `gh attestation verify` — SECURITY.md.",
+    ));
+
+    widgets::card(content)
+}
+
+/// The state line. Every branch is something that is actually true right now, and the two that a
+/// status line usually gets wrong are spelled out: "downloaded" is not "installed", and "installed"
+/// is not "running".
+fn update_headline(update: &UpdateView) -> (Tone, String) {
+    match &update.phase {
+        UpdatePhase::Checking => (Tone::Neutral, "спрашиваем страницу релизов…".to_string()),
+        UpdatePhase::Downloading { received, total } => (
+            Tone::Neutral,
+            match total {
+                Some(total) => format!(
+                    "качаем {} из {}",
+                    human_bytes(*received),
+                    human_bytes(*total)
+                ),
+                None => format!("качаем {}", human_bytes(*received)),
+            },
+        ),
+        UpdatePhase::Staged { version } => (
+            Tone::Warning,
+            format!("{version} скачана и проверена — ждёт перезапуска"),
+        ),
+        UpdatePhase::Installed { version } => (
+            Tone::Success,
+            format!("{version} на месте — заработает после перезапуска"),
+        ),
+        UpdatePhase::Idle => match (update.current, update.latest) {
+            (_, None) => (Tone::Neutral, "ещё не проверяли".to_string()),
+            (Some(current), Some(latest)) if current < latest => {
+                (Tone::Warning, format!("доступна {latest}"))
+            }
+            (Some(current), Some(latest)) if current > latest => (
+                Tone::Success,
+                format!("{current} — новее последнего релиза ({latest})"),
+            ),
+            (Some(current), _) => (Tone::Success, format!("{current} — последняя версия")),
+            (None, Some(latest)) => (
+                Tone::Neutral,
+                format!("последний релиз: {latest}; эта сборка без версии"),
+            ),
+        },
     }
 }
 
