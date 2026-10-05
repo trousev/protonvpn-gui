@@ -53,6 +53,10 @@ a fifth without a human decision.
 
 ```sh
 cargo test                                  # unit tests + fixture-corpus guarantees
+cargo test -p protonvpn-core --test live_update -- --ignored --nocapture
+                                            # the updater against the real release page (~5 MB);
+                                            # ignored on purpose: `cargo test` never reaches the
+                                            # network, and CI never sees it
 cargo fmt --all                             # formatting is enforced
 cargo clippy --all-targets -- -D warnings   # warnings are errors
 ./scripts/check-linux-deps.sh               # Linux-only graph, and a ratcheted crate count
@@ -233,6 +237,17 @@ authorship — is written down in `SECURITY.md` rather than implied.
 captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; a live
 SOCKS5 round trip with a real application on the other end of the listener; desktop
 notifications, which need a human decision because they would be a new sanctioned exception.
+
+**Verified live** (2026-10-05, the updater): the release page answers and the answer is parsed into
+a release or a finding with a reason; a real 4.9 MB asset is downloaded through the redirect to
+`objects.githubusercontent.com`, its size survives that redirect, it hashes to the checksum the
+release published (checked again with `sha256sum`), it passes the type-2 check, and it is swapped
+in place with the previous image kept as `.old` and removed at the next start. Replacing the file
+under a **running** AppImage is invisible to it — the FUSE mount keeps serving the old bytes, the
+window redraws the same frame, and a fresh start runs the new image. Run headless with a sandboxed
+`$HOME`, the application itself performed its scheduled check and wrote `last_check` into its
+config. The repeatable version of all of that is
+`cargo test -p protonvpn-core --test live_update -- --ignored`.
 
 **Verified live** (2026-09-30, two full rounds): the app connects on start to the configured
 country and the tray reports it, `protonvpn status` agrees, the egress address changes and comes

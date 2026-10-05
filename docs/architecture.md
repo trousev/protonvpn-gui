@@ -733,7 +733,13 @@ implying the checksum is more than it is. `SECURITY.md` repeats it in the place 
 it.
 
 The second check is the shape: an ELF with `AI\x02` at offset 8, which is what the pinned type-2
-runtime produces. A captive portal's error page agrees perfectly with a checksum file served from
+runtime produces.
+
+Everything above is tested offline, through a stand-in `curl` — a suite that reaches the network is
+a suite that fails when the network does. The measurement a human asks for is
+`crates/protonvpn-core/tests/live_update.rs`: both its tests are `#[ignore]`d, and running them
+drives the real code against the real release page and a real 5 MB asset — the redirect, the
+`Content-Length`, the hash, the magic, the swap. A captive portal's error page agrees perfectly with a checksum file served from
 the same portal, and is caught by not being an AppImage at all.
 
 ### 14.4 The swap
