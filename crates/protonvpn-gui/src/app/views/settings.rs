@@ -13,11 +13,11 @@ use iced::{Alignment, Element, Length, Padding, Theme};
 
 use protonvpn_core::config::UpdatePolicy;
 use protonvpn_core::engine::{UpdatePhase, UpdateView};
-use protonvpn_core::model::{Setting, render_age};
+use protonvpn_core::model::Setting;
 use protonvpn_core::socks5::{Closed, GateState};
 use protonvpn_core::update::human_bytes;
 
-use crate::app::{App, AppToggle, Message, SettingsTab, setting_label, setting_values};
+use crate::app::{App, AppToggle, LanguageChoice, Message, SettingsTab, setting_values};
 use crate::theme;
 use crate::widgets::{self, Tone};
 
@@ -148,7 +148,7 @@ fn cli_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
     let head = row![
         widgets::eyebrow("protonvpn config list"),
         Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
-        widgets::faint(observation.age_text()),
+        widgets::faint(app.i18n.age_text(observation.age())),
     ]
     .align_y(Alignment::Center);
 
@@ -293,10 +293,36 @@ fn value_label<'a>(key: &str, value: &'a str) -> &'a str {
 
 // --- our own settings -----------------------------------------------------------------------
 
+/// The language picker: one radio per language this build carries, plus "System".
+///
+/// It is the first thing on the General tab on purpose. A user who has landed in a language they
+/// cannot read has to be able to find their way out without reading anything — which is also why
+/// every option is written in the language it names.
+fn language_options(app: &App) -> Element<'_, Message> {
+    let mut options = row![].spacing(18).align_y(Alignment::Center);
+    for choice in LanguageChoice::all() {
+        options = options.push(
+            radio(
+                choice.label(&app.i18n),
+                choice,
+                Some(app.language_choice()),
+                Message::LanguageSelected,
+            )
+            .text_size(13)
+            .size(15),
+        );
+    }
+    options.into()
+}
+
 fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
     match tab {
         SettingsTab::General => widgets::card(
             column![
+                widgets::eyebrow(app.i18n.settings_language_title()),
+                widgets::muted(app.i18n.settings_language_hint()),
+                language_options(app),
+                widgets::separator(),
                 widgets::eyebrow("Приложение"),
                 widget_toggle(
                     app.config.autostart,
@@ -358,7 +384,7 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
         ),
         SettingsTab::Proxy => socks5_card(app),
         SettingsTab::Polling => {
-            let age = app.shared.state.connection.age_text();
+            let age = app.i18n.age_text(app.shared.state.connection.age());
             widgets::card(
                 column![
                     widgets::eyebrow("Как мы узнаём состояние"),
@@ -517,7 +543,11 @@ fn socks5_card(app: &App) -> Element<'_, Message> {
                     Some("Проверьте адрес и порт: слушать можно только localhost.".to_string())
                 }
             };
-            (tone, format!("закрыт · {}", reason.describe()), advice)
+            (
+                tone,
+                format!("закрыт · {}", reason.describe(&app.i18n)),
+                advice,
+            )
         }
     };
 
@@ -582,8 +612,8 @@ fn socks5_card(app: &App) -> Element<'_, Message> {
             stats.accepted,
             stats.refused,
             stats.active,
-            human_bytes(stats.up),
-            human_bytes(stats.down),
+            human_bytes(stats.up, &app.i18n),
+            human_bytes(stats.down, &app.i18n),
             if stats.overloaded > 0 {
                 format!(" · нет места {}", stats.overloaded)
             } else {
@@ -643,7 +673,7 @@ fn policy_label(policy: UpdatePolicy) -> &'static str {
 /// image is waiting for a restart" and "this build is not an AppImage and cannot replace itself".
 fn updates_card(app: &App) -> Element<'_, Message> {
     let update = &app.shared.update;
-    let (tone, headline) = update_headline(update);
+    let (tone, headline) = update_headline(update, app);
     let busy = matches!(
         update.phase,
         UpdatePhase::Checking | UpdatePhase::Downloading { .. }
@@ -658,11 +688,11 @@ fn updates_card(app: &App) -> Element<'_, Message> {
         _ => false,
     };
 
-    let mut checked = format!("Версия: {}", crate::version::label());
+    let mut checked = format!("Версия: {}", crate::version::label(&app.i18n));
     match update.checked_at {
         Some(at) => checked.push_str(&format!(
             " · страница релизов: {}",
-            render_age(
+            app.i18n.age_text(
                 std::time::SystemTime::now()
                     .duration_since(at)
                     .unwrap_or_default()
@@ -772,7 +802,7 @@ fn updates_card(app: &App) -> Element<'_, Message> {
 /// The state line. Every branch is something that is actually true right now, and the two that a
 /// status line usually gets wrong are spelled out: "downloaded" is not "installed", and "installed"
 /// is not "running".
-fn update_headline(update: &UpdateView) -> (Tone, String) {
+fn update_headline(update: &UpdateView, app: &App) -> (Tone, String) {
     match &update.phase {
         UpdatePhase::Checking => (Tone::Neutral, "спрашиваем страницу релизов…".to_string()),
         UpdatePhase::Downloading { received, total } => (
@@ -780,10 +810,10 @@ fn update_headline(update: &UpdateView) -> (Tone, String) {
             match total {
                 Some(total) => format!(
                     "качаем {} из {}",
-                    human_bytes(*received),
-                    human_bytes(*total)
+                    human_bytes(*received, &app.i18n),
+                    human_bytes(*total, &app.i18n)
                 ),
-                None => format!("качаем {}", human_bytes(*received)),
+                None => format!("качаем {}", human_bytes(*received, &app.i18n)),
             },
         ),
         UpdatePhase::Staged { version } => (
@@ -856,5 +886,59 @@ fn prompt_label(pending: &protonvpn_core::engine::PendingPrompt) -> &'static str
         protonvpn_core::interpreter::PromptKind::Unrecognised => {
             "неопознанный запрос — смотрите консоль"
         }
+    }
+}
+
+/// What a CLI setting is called, in words a person reads. `None` for a key we have never seen:
+/// the settings tab still shows it, under its own name, rather than hiding it.
+pub fn setting_label(key: &str) -> Option<(&'static str, &'static str)> {
+    Some(match key {
+        "netshield" => (
+            "NetShield",
+            "Блокировать вредоносные домены на уровне DNS шлюза.",
+        ),
+        "kill-switch" => ("Kill switch", "Блокировать трафик, если туннель падает."),
+        "port-forwarding" => (
+            "Порт-форвардинг",
+            "Разрешить серверу выдавать проброшенный порт. Аренду держим мы, через NAT-PMP.",
+        ),
+        "custom-dns" => (
+            "Свои DNS",
+            "Использовать указанные DNS-серверы внутри туннеля.",
+        ),
+        "vpn-accelerator" => ("VPN Accelerator", "Ускорение на дальних серверах."),
+        "moderate-nat" => ("Moderate NAT", "Мягкий NAT для игр и P2P."),
+        "ipv6" => ("IPv6", "Пропускать IPv6 внутри туннеля."),
+        "anonymous-crash-reports" => (
+            "Анонимные отчёты о сбоях",
+            "Отправлять краш-логи без привязки к аккаунту.",
+        ),
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_setting_we_label_is_one_the_cli_actually_has() {
+        // The list is `protonvpn config list` on 1.0.3 (`docs/cli-surface.md` §1). If the CLI
+        // grows a key we do not know, it still shows up — under its own name.
+        for key in [
+            "netshield",
+            "kill-switch",
+            "port-forwarding",
+            "custom-dns",
+            "vpn-accelerator",
+            "moderate-nat",
+            "ipv6",
+            "anonymous-crash-reports",
+        ] {
+            assert!(setting_label(key).is_some(), "{key}");
+            assert!(setting_values(key).is_some(), "{key}");
+        }
+        assert!(setting_label("split-tunneling").is_none());
+        assert!(setting_label("auto-connect").is_none());
     }
 }

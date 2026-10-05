@@ -23,6 +23,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::i18n::I18n;
+
 use sha2::{Digest, Sha256};
 
 /// How often the staging file is measured while a download runs. It is the only progress signal
@@ -490,18 +492,20 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 
 /// A byte count as a person reads it. One decimal is enough: the difference between 70.4 and
 /// 70.5 MiB tells nobody anything.
-pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [(&str, u64); 3] = [("МиБ", 1024 * 1024), ("КиБ", 1024), ("Б", 1)];
-    for (unit, size) in UNITS {
-        if bytes >= size {
-            return if size == 1 {
-                format!("{bytes} {unit}")
-            } else {
-                format!("{:.1} {unit}", bytes as f64 / size as f64)
-            };
-        }
+///
+/// The arithmetic is Rust's and only the unit is the catalogue's: a number formatted per locale
+/// would need a decimal separator rule for two call sites, and MiB is a unit Russian spells
+/// differently and English does not.
+pub fn human_bytes(bytes: u64, i18n: &I18n) -> String {
+    const MIB: u64 = 1024 * 1024;
+    const KIB: u64 = 1024;
+    if bytes >= MIB {
+        i18n.update_bytes_mib(format!("{:.1}", bytes as f64 / MIB as f64))
+    } else if bytes >= KIB {
+        i18n.update_bytes_kib(format!("{:.1}", bytes as f64 / KIB as f64))
+    } else {
+        i18n.update_bytes_b(bytes.to_string())
     }
-    "0 Б".to_string()
 }
 
 // --- the invocations this module is allowed to make -------------------------------------------

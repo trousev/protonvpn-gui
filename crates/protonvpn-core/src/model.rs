@@ -12,6 +12,8 @@ use std::fmt;
 use std::net::IpAddr;
 use std::time::{Duration, SystemTime};
 
+use crate::i18n::I18n;
+
 /// Identifies one recorded invocation. Monotonic within a process run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InvocationId(pub u64);
@@ -49,22 +51,8 @@ impl<T> Observation<T> {
     /// The age, rendered per the wording table in `docs/architecture.md` §7.
     ///
     /// Deliberately never says "stale" and carries no icon: the number is the whole message.
-    pub fn age_text(&self) -> String {
-        render_age(self.age())
-    }
-}
-
-/// The one place freshness is turned into words.
-pub fn render_age(age: Duration) -> String {
-    let secs = age.as_secs();
-    if secs < 10 {
-        "updated just now".to_string()
-    } else if secs < 60 {
-        format!("updated {secs}s ago")
-    } else if secs < 3600 {
-        format!("updated {} mins ago", secs / 60)
-    } else {
-        format!("updated {} hours ago", secs / 3600)
+    pub fn age_text(&self, i18n: &I18n) -> String {
+        i18n.age_text(self.age())
     }
 }
 
@@ -84,17 +72,6 @@ pub enum ConnectionStatus {
 impl ConnectionStatus {
     pub fn is_connected(&self) -> bool {
         matches!(self, Self::Connected(_))
-    }
-
-    /// Short label; `None` where there is nothing honest to say.
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Unknown => "неизвестно",
-            Self::Disconnected => "отключено",
-            Self::Connecting => "подключаюсь",
-            Self::Connected(_) => "подключено",
-            Self::Error(_) => "ошибка",
-        }
     }
 }
 
@@ -277,17 +254,6 @@ pub enum RunnerStatus {
     },
 }
 
-impl RunnerStatus {
-    /// The collapsed-console wording fixed by `docs/architecture.md` §4.
-    pub fn render(&self) -> String {
-        match self {
-            Self::Idle => "жду".to_string(),
-            Self::Running { argv, .. } => format!("работаю: {}", crate::pty::command_line(argv)),
-            Self::Queued { depth } => format!("в очереди: {depth}"),
-        }
-    }
-}
-
 /// Everything the interpreter knows. One value, replaced wholesale by the reducer so it stays
 /// pure and testable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,27 +325,6 @@ impl ConnectTarget {
             ..Self::default()
         }
     }
-
-    /// What the user asked for, for the "Connecting…" label. Never claims more than the intent.
-    pub fn describe(&self) -> String {
-        if let Some(server) = &self.server {
-            server.clone()
-        } else if let Some(city) = &self.city {
-            city.clone()
-        } else if let Some(country) = &self.country {
-            country.clone()
-        } else if self.secure_core {
-            "Secure Core".to_string()
-        } else if self.tor {
-            "Tor".to_string()
-        } else if self.p2p {
-            "P2P".to_string()
-        } else if self.random {
-            "случайный".to_string()
-        } else {
-            "быстрейший".to_string()
-        }
-    }
 }
 
 /// A live port-forwarding lease, as held by the NAT-PMP client.
@@ -394,47 +339,6 @@ pub struct Lease {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn age_wording_matches_the_table() {
-        assert_eq!(render_age(Duration::from_secs(0)), "updated just now");
-        assert_eq!(render_age(Duration::from_secs(9)), "updated just now");
-        assert_eq!(render_age(Duration::from_secs(10)), "updated 10s ago");
-        assert_eq!(render_age(Duration::from_secs(59)), "updated 59s ago");
-        assert_eq!(render_age(Duration::from_secs(60)), "updated 1 mins ago");
-        assert_eq!(render_age(Duration::from_secs(180)), "updated 3 mins ago");
-        assert_eq!(render_age(Duration::from_secs(3600)), "updated 1 hours ago");
-        assert_eq!(render_age(Duration::from_secs(7200)), "updated 2 hours ago");
-    }
-
-    #[test]
-    fn age_never_says_stale() {
-        for secs in [0, 5, 61, 7200, 86_400] {
-            let text = render_age(Duration::from_secs(secs));
-            assert!(!text.contains("stale"), "{text}");
-            assert!(!text.contains("устар"), "{text}");
-        }
-    }
-
-    #[test]
-    fn runner_status_uses_the_contracted_wording() {
-        assert_eq!(RunnerStatus::Idle.render(), "жду");
-        assert_eq!(RunnerStatus::Queued { depth: 2 }.render(), "в очереди: 2");
-        assert_eq!(
-            RunnerStatus::Running {
-                id: InvocationId(1),
-                argv: vec![
-                    "protonvpn".into(),
-                    "connect".into(),
-                    "--country".into(),
-                    "uk".into()
-                ],
-                started_at: SystemTime::now(),
-            }
-            .render(),
-            "работаю: protonvpn connect --country uk"
-        );
-    }
 
     #[test]
     fn absence_of_information_is_unknown_not_disconnected() {

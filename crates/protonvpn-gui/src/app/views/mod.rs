@@ -68,7 +68,7 @@ pub(crate) fn sidebar(app: &App) -> Element<'_, Message> {
     let status = &app.shared.state.connection.value;
     let status_line = row![
         widgets::dot(status_tone(status).color()),
-        text(status.label()).size(13),
+        text(app.i18n.connection_label(status)).size(13),
     ]
     .spacing(8)
     .align_y(Alignment::Center);

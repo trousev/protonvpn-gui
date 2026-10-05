@@ -30,13 +30,13 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
             .style(theme::ghost(theme::TEXT_MUTED, false))
             .on_press(Message::ToggleConsole),
             widgets::dot(crate::app::views::status_tone(&connection.value).color()),
-            text(app.shared.runner.render())
+            text(app.i18n.runner_label(&app.shared.runner))
                 .size(12)
                 .font(Font::MONOSPACE),
             widgets::faint("·"),
-            text(connection.value.label()).size(12),
+            text(app.i18n.connection_label(&connection.value)).size(12),
             widgets::faint("·"),
-            text(connection.age_text()).size(12),
+            text(app.i18n.age_text(connection.age())).size(12),
             iced::widget::Space::new()
                 .width(Length::Fill)
                 .height(Length::Fixed(1.0)),

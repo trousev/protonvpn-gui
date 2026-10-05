@@ -23,7 +23,13 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# The Linux closure: 202 crates as of the AppImage updater. That feature added 7 — `sha2` with
+# The Linux closure: 212 crates as of the localization. Project Fluent added 10 — `fluent-bundle`
+# with `fluent-syntax`, `fluent-langneg`, `intl-memoizer`, `intl_pluralrules`, `unic-langid` and its
+# `-impl`, `type-map`, `self_cell` and `smallvec`; `rustc-hash` and `memchr` were already here.
+# The catalogue is not something to hand-roll: a language needs plural rules (`ru` has three forms
+# where `en` has two), and context has to live beside the string rather than in a comment three
+# files away. `build.rs` then makes an incomplete translation a compile error.
+# Before that: 202 as of the AppImage updater. That feature added 7 — `sha2` with
 # `digest`, `block-buffer`, `crypto-common`, `generic-array`, `typenum` and `cpufeatures` — because
 # the updater checks a downloaded image against the `SHA256SUMS` published with it, and a hash is the
 # wrong thing to hand-roll: a subtly wrong implementation fails silently, and this check is what the
@@ -32,7 +38,7 @@ cd "$REPO_ROOT"
 # `flate2`/`miniz_oxide`, `palette`, `rayon` and the `drm` family — and added 6 (`harfrust`,
 # `core_maths`, `iced_debug`, `iced_program`, `lilt`, `linebender_resource_handle`). Raise this only
 # with the reason in the commit message.
-MAX_CRATES=202
+MAX_CRATES=212
 
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 if [[ -z "$HOST_TRIPLE" ]]; then

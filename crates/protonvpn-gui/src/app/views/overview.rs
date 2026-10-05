@@ -76,7 +76,7 @@ fn status_card(app: &App) -> Element<'_, Message> {
     .on_press(Message::PrimaryAction);
 
     let head = row![
-        widgets::status_chip(status_tone(status), status.label()),
+        widgets::status_chip(status_tone(status), app.i18n.connection_label(status)),
         Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
         action,
     ]
@@ -112,7 +112,7 @@ fn status_card(app: &App) -> Element<'_, Message> {
         text(title).size(19),
         widgets::muted(format!(
             "{} · соединение: {}",
-            connection.age_text(),
+            app.i18n.age_text(connection.age()),
             app.selected_name()
         )),
         text(format!("$ {}", selected_argv(app)))

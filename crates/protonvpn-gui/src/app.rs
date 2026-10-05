@@ -30,6 +30,7 @@ use iced::{clipboard, exit, time, window};
 use protonvpn_core::config::UpdatePolicy;
 use protonvpn_core::config::{Config, ConfigStore, SYSTEM_FASTEST, SavedConnection};
 use protonvpn_core::engine::{EngineHandle, EngineOptions, Request, Shared, TrayView, UiCommand};
+use protonvpn_core::i18n::{I18n, Locale};
 use protonvpn_core::launcher::Intent;
 use protonvpn_core::model::{ConnectTarget, InvocationId};
 
@@ -50,7 +51,10 @@ pub fn run() -> iced::Result {
     // ("Not possible on Wayland" in `set_visible`). Closing the window therefore has to mean
     // *destroying* it, and the app has to keep running afterwards — which is what a daemon does.
     iced::daemon(boot, App::update, App::view)
-        .title("Proton VPN")
+        // The window's title comes from the catalogue like everything else, and is read on every
+        // window creation rather than baked in at boot: the app is a daemon, so a window opened
+        // after a language change must not come back in the old one.
+        .title(|app: &App, _window: window::Id| app.i18n.app_name())
         .subscription(App::subscription)
         .theme(|_state: &App, _window: window::Id| theme::app())
         .run()
@@ -87,6 +91,9 @@ fn boot() -> (App, Task<Message>) {
         Err(error) => Some(format!("ярлык: {error}")),
     };
 
+    // One catalogue for the window, one for the tray and one for the engine: a `FluentBundle` is
+    // `Send` but not `Sync`, so each thread owns its own instead of sharing one behind a lock.
+    let locale = config.language.unwrap_or_else(Locale::detect);
     let start_minimized = config.start_minimized;
     // "Connect at startup" connects the *selected connection*, because that is the only thing the
     // app has that means "what should `protonvpn connect` be". It is a request, not a command: the
@@ -98,8 +105,9 @@ fn boot() -> (App, Task<Message>) {
     let (tray_commands, tray_rx) = std::sync::mpsc::channel::<TrayCommand>();
     let initial_view = TrayView {
         status: protonvpn_core::model::ConnectionStatus::Unknown,
+        language: locale,
         detail: None,
-        age_text: "updated just now".into(),
+        age_text: I18n::new(locale).age_text(Duration::ZERO),
         update: None,
     };
     let tray = tray::spawn(tray_commands, initial_view);
@@ -125,6 +133,7 @@ fn boot() -> (App, Task<Message>) {
     // What this build says it is, baked in by the build script (`scripts/version.sh`). The engine
     // compares it against the latest release; a build without one says so instead of guessing.
     options.version = crate::version::current();
+    options.locale = locale;
     options.tray_available = tray_available;
     options.tray = presenter.as_ref().map(|presenter| {
         Box::new(SharedPresenter(Arc::clone(presenter)))
@@ -132,7 +141,14 @@ fn boot() -> (App, Task<Message>) {
     });
     let engine = protonvpn_core::engine::spawn(options);
 
-    let mut app = App::new(engine, config, tray_rx, presenter, window_settings);
+    let mut app = App::new(
+        engine,
+        config,
+        tray_rx,
+        presenter,
+        window_settings,
+        I18n::new(locale),
+    );
     app.tray_available = tray_available;
     app.notice = config_error.or(autostart_note).or(entry_note);
 
@@ -179,6 +195,32 @@ impl Page {
         match self {
             Self::Overview => "Обзор",
             Self::Settings => "Настройки",
+        }
+    }
+}
+
+/// What the language picker offers: every language this build carries, and "whatever the desktop
+/// is set to", which is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LanguageChoice {
+    System,
+    Language(Locale),
+}
+
+impl LanguageChoice {
+    pub fn all() -> impl Iterator<Item = LanguageChoice> {
+        std::iter::once(LanguageChoice::System)
+            .chain(Locale::ALL.iter().copied().map(LanguageChoice::Language))
+    }
+
+    /// The label in the picker. A language names itself, in itself — that is the only way a picker
+    /// is usable to somebody who cannot read the language the app is currently stuck in. "System"
+    /// is the one entry that has to be translated, because it is a statement about the app rather
+    /// than a name.
+    pub fn label(self, i18n: &I18n) -> String {
+        match self {
+            Self::System => i18n.settings_language_system(),
+            Self::Language(locale) => i18n.endonym(locale),
         }
     }
 }
@@ -464,6 +506,7 @@ pub enum Message {
         key: String,
     },
     Toggle(AppToggle, bool),
+    LanguageSelected(LanguageChoice),
     DnsChanged(String),
     /// The user asked to sign in, whatever the interpreter currently believes about the account.
     SignInRequested,
@@ -503,6 +546,9 @@ pub enum Message {
 pub struct App {
     engine: EngineHandle,
     config: Config,
+    /// Every word the window draws. The engine and the tray have their own; changing the language
+    /// replaces all three, and nothing is shared because nothing has to be.
+    i18n: I18n,
     shared: Shared,
     console: ConsoleModel,
     tray_commands: Receiver<TrayCommand>,
@@ -545,11 +591,13 @@ impl App {
         tray_commands: Receiver<TrayCommand>,
         tray: Option<Arc<tray::TrayPresenter>>,
         window_settings: window::Settings,
+        i18n: I18n,
     ) -> Self {
         let shared = engine.snapshot();
         let mut console = ConsoleModel::default();
         console.refresh(&engine.bus().lock().unwrap_or_else(|p| p.into_inner()));
         Self {
+            i18n,
             socks5_address: config.socks5.address.clone(),
             socks5_port: config.socks5.port.to_string(),
             socks5_verify: config.socks5.verify_seconds.to_string(),
@@ -845,6 +893,10 @@ impl App {
             }
             Message::Toggle(which, value) => {
                 self.toggle(which, value);
+                Task::none()
+            }
+            Message::LanguageSelected(choice) => {
+                self.select_language(choice);
                 Task::none()
             }
             Message::SignInRequested => {
@@ -1178,6 +1230,33 @@ impl App {
         }
     }
 
+    /// Which language the picker shows as chosen.
+    pub fn language_choice(&self) -> LanguageChoice {
+        match self.config.language {
+            Some(locale) => LanguageChoice::Language(locale),
+            None => LanguageChoice::System,
+        }
+    }
+
+    /// Change the language now, and remember the choice.
+    ///
+    /// The window, the tray and the engine each hold their own catalogue, so this is three
+    /// statements and not one: `self.i18n` is the window's, `Request::SetLanguage` rebuilds the
+    /// engine's and re-publishes the tray view, and the tray swaps its own when the view arrives
+    /// saying the language moved.
+    fn select_language(&mut self, choice: LanguageChoice) {
+        let (preference, locale) = match choice {
+            LanguageChoice::System => (None, Locale::detect()),
+            LanguageChoice::Language(locale) => (Some(locale), locale),
+        };
+        self.i18n.set_locale(locale);
+        self.engine.send(Request::SetLanguage(locale));
+
+        let mut config = self.config.clone();
+        config.language = preference;
+        self.save_config(config);
+    }
+
     fn save_config(&mut self, config: Config) {
         self.config = config.clone();
         self.engine.send(Request::SaveConfig(Box::new(config)));
@@ -1218,7 +1297,7 @@ impl App {
             .state
             .account
             .as_ref()
-            .map(|observation| observation.age_text())
+            .map(|observation| self.i18n.age_text(observation.age()))
     }
 
     /// What an application should be pointed at: the address that is actually listening, or the
@@ -1302,7 +1381,7 @@ impl App {
             .state
             .countries
             .as_ref()
-            .map(|observation| observation.age_text())
+            .map(|observation| self.i18n.age_text(observation.age()))
     }
 
     /// Is the loaded city list the one for this country?
@@ -1381,34 +1460,6 @@ pub fn setting_values(key: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-/// What a CLI setting is called, in words a person reads. `None` for a key we have never seen:
-/// the settings tab still shows it, under its own name, rather than hiding it.
-pub fn setting_label(key: &str) -> Option<(&'static str, &'static str)> {
-    Some(match key {
-        "netshield" => (
-            "NetShield",
-            "Блокировать вредоносные домены на уровне DNS шлюза.",
-        ),
-        "kill-switch" => ("Kill switch", "Блокировать трафик, если туннель падает."),
-        "port-forwarding" => (
-            "Порт-форвардинг",
-            "Разрешить серверу выдавать проброшенный порт. Аренду держим мы, через NAT-PMP.",
-        ),
-        "custom-dns" => (
-            "Свои DNS",
-            "Использовать указанные DNS-серверы внутри туннеля.",
-        ),
-        "vpn-accelerator" => ("VPN Accelerator", "Ускорение на дальних серверах."),
-        "moderate-nat" => ("Moderate NAT", "Мягкий NAT для игр и P2P."),
-        "ipv6" => ("IPv6", "Пропускать IPv6 внутри туннеля."),
-        "anonymous-crash-reports" => (
-            "Анонимные отчёты о сбоях",
-            "Отправлять краш-логи без привязки к аккаунту.",
-        ),
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1426,27 +1477,6 @@ mod tests {
         assert_eq!(setting_values("ipv6"), Some(&["off", "on"][..]));
         // An unknown key offers no invented options.
         assert_eq!(setting_values("something-new"), None);
-    }
-
-    #[test]
-    fn every_setting_we_label_is_one_the_cli_actually_has() {
-        // The list is `protonvpn config list` on 1.0.3 (`docs/cli-surface.md` §1). If the CLI
-        // grows a key we do not know, it still shows up — under its own name.
-        for key in [
-            "netshield",
-            "kill-switch",
-            "port-forwarding",
-            "custom-dns",
-            "vpn-accelerator",
-            "moderate-nat",
-            "ipv6",
-            "anonymous-crash-reports",
-        ] {
-            assert!(setting_label(key).is_some(), "{key}");
-            assert!(setting_values(key).is_some(), "{key}");
-        }
-        assert!(setting_label("split-tunneling").is_none());
-        assert!(setting_label("auto-connect").is_none());
     }
 
     /// The bug this pins: the account gate is a claim about what the CLI said, and when that
@@ -1469,7 +1499,14 @@ mod tests {
         let engine = protonvpn_core::engine::spawn(options);
         let (_tx, rx) = std::sync::mpsc::channel::<TrayCommand>();
 
-        let mut app = App::new(engine, config, rx, None, window::Settings::default());
+        let mut app = App::new(
+            engine,
+            config,
+            rx,
+            None,
+            window::Settings::default(),
+            I18n::new(Locale::SOURCE),
+        );
 
         // Nothing has been observed yet. Unknown is not "signed out", so the app shows the window
         // rather than inventing a verdict and the login page is not forced.
@@ -1499,7 +1536,14 @@ mod tests {
         options.program = dir.join("no-such-cli").to_string_lossy().into_owned();
         let engine = protonvpn_core::engine::spawn(options);
         let (_tx, rx) = std::sync::mpsc::channel::<TrayCommand>();
-        let mut app = App::new(engine, config, rx, None, window::Settings::default());
+        let mut app = App::new(
+            engine,
+            config,
+            rx,
+            None,
+            window::Settings::default(),
+            I18n::new(Locale::SOURCE),
+        );
 
         // Nothing observed yet: the overview and the settings page both have to hold up.
         let _ = views::overview::view(&app);
@@ -1537,7 +1581,14 @@ mod tests {
         options.program = dir.join("no-such-cli").to_string_lossy().into_owned();
         let engine = protonvpn_core::engine::spawn(options);
         let (_tx, rx) = std::sync::mpsc::channel::<TrayCommand>();
-        let mut app = App::new(engine, config, rx, None, window::Settings::default());
+        let mut app = App::new(
+            engine,
+            config,
+            rx,
+            None,
+            window::Settings::default(),
+            I18n::new(Locale::SOURCE),
+        );
         app.settings_tab = SettingsTab::General;
 
         let current = Version::parse("0.1.20").unwrap();

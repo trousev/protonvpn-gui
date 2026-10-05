@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::i18n::Locale;
 use crate::model::ConnectTarget;
 
 /// The selected connection when the user has never chosen one. The three system presets are not
@@ -81,6 +82,10 @@ pub struct Config {
     pub socks5: Socks5,
     /// Auto-update for AppImage installs — sanctioned exception #4 (`docs/architecture.md` §14).
     pub update: Update,
+    /// Which language the interface speaks. `None` means "whatever the desktop is set to" —
+    /// `$LANGUAGE`, `$LC_ALL`, `$LC_MESSAGES`, `$LANG`, in that order, and English when none of
+    /// them names a language this build carries. See [`crate::i18n`].
+    pub language: Option<Locale>,
 }
 
 /// The selection used when the file does not mention one.
@@ -105,6 +110,7 @@ impl Default for Config {
             selected_connection: default_selected_connection(),
             socks5: Socks5::default(),
             update: Update::default(),
+            language: None,
         }
     }
 }
@@ -133,6 +139,7 @@ struct Wire {
     selected_connection: Option<String>,
     socks5: Socks5,
     update: Update,
+    language: Option<Locale>,
 }
 
 impl From<Wire> for Config {
@@ -147,6 +154,7 @@ impl From<Wire> for Config {
             selected_connection: wire.selected_connection,
             socks5: wire.socks5,
             update: wire.update,
+            language: wire.language,
         }
     }
 }
@@ -163,6 +171,7 @@ impl From<&Config> for Wire {
             selected_connection: config.selected_connection.clone(),
             socks5: config.socks5.clone(),
             update: config.update.clone(),
+            language: config.language,
         }
     }
 }
@@ -474,6 +483,7 @@ mod tests {
             autostart: true,
             desktop_entry: false,
             probe_enabled: false,
+            language: Some(Locale::from_id("ru").unwrap()),
             connections: vec![SavedConnection {
                 id: "work".into(),
                 name: "Работа".into(),

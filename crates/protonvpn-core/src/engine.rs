@@ -30,6 +30,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::{Config, ConfigStore, UpdatePolicy};
+use crate::i18n::{I18n, Locale};
 use crate::interpreter::{self, PromptKind};
 use crate::launcher::Intent;
 use crate::logbus::{InvocationKind, LogBus, LogEvent};
@@ -95,6 +96,10 @@ fn since(at: SystemTime) -> Duration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayView {
     pub status: ConnectionStatus,
+    /// The language the labels in this view are written in. The tray renders its own menu, on its
+    /// own thread, and this is how a language change reaches it: through the same update that
+    /// carries everything else.
+    pub language: Locale,
     /// `NL#818 · Amsterdam, Netherlands` when connected.
     pub detail: Option<String>,
     pub age_text: String,
@@ -256,6 +261,10 @@ pub enum Request {
         started_at: SystemTime,
         duration: Duration,
     },
+    /// Speak another language from now on. The engine holds its own catalogue because every note
+    /// it writes is already-rendered text; switching here is what makes a language change reach
+    /// the tray and everything the engine says next.
+    SetLanguage(Locale),
     /// Ask the release page what the latest version is. Works whatever the policy says: an
     /// explicit request is consent, and a button that refuses to work would be a lie.
     UpdateCheck,
@@ -403,6 +412,9 @@ pub struct EngineOptions {
     /// How long the updater waits after startup before its first look. A test seam the way
     /// `program` is one: the cadence itself is a number a test must not have to sleep through.
     pub update_delay: Duration,
+    /// The language of every word this engine produces — a note in the console, the tray's menu.
+    /// The window sets it from the configuration; the tests set it to whatever they assert on.
+    pub locale: Locale,
 }
 
 impl EngineOptions {
@@ -419,6 +431,7 @@ impl EngineOptions {
             curl: "curl".to_string(),
             installed: Installed::detect(),
             update_delay: UPDATE_STARTUP_DELAY,
+            locale: Locale::SOURCE,
         }
     }
 }
@@ -479,6 +492,7 @@ pub fn spawn(options: EngineOptions) -> EngineHandle {
         startup_connect: None,
         status_attempted: false,
         secrets: None,
+        i18n: I18n::new(options.locale),
         tray: options.tray,
         tray_view: None,
         cwd: options.cwd,
@@ -592,6 +606,9 @@ struct Engine {
     /// could not be asked" is not a reason to stay parked forever.
     status_attempted: bool,
     secrets: Option<Secrets>,
+    /// Every word this engine writes. Its own instance rather than the window's: the two run on
+    /// different threads, and a `FluentBundle` is `Send` but not `Sync`.
+    i18n: I18n,
     tray: Option<Box<dyn TrayPresenter>>,
     tray_view: Option<TrayView>,
     cwd: PathBuf,
@@ -855,6 +872,12 @@ impl Engine {
                 }
             }
             Request::SaveConfig(config) => self.save_config(*config),
+            Request::SetLanguage(locale) => {
+                self.i18n.set_locale(locale);
+                // The tray's menu is rebuilt from the view, so a new view is the whole update.
+                self.tray_view = None;
+                self.publish_tray();
+            }
             Request::Socks5Report(event) => self.react_to_socks5(event),
             Request::Ui(command) => {
                 let mut shared = self.lock();
@@ -1366,11 +1389,12 @@ impl Engine {
         let update = tray_update(&self.update);
         let view = TrayView {
             status: self.state.connection.value.clone(),
+            language: self.i18n.locale(),
             detail: match &self.state.connection.value {
                 ConnectionStatus::Connected(info) => Some(info.describe()),
                 _ => None,
             },
-            age_text: self.state.connection.age_text(),
+            age_text: self.i18n.age_text(self.state.connection.age()),
             update,
         };
         if self.tray_view.as_ref() == Some(&view) {
@@ -1913,7 +1937,7 @@ impl Engine {
         if !changed || !was_open {
             return;
         }
-        self.note_socks5(format!("закрыт: {}", reason.describe()));
+        self.note_socks5(format!("закрыт: {}", reason.describe(&self.i18n)));
     }
 
     /// Reports from the proxy's own threads.
@@ -2283,7 +2307,7 @@ impl Engine {
                     vec![
                         format!(
                             "скачано {} , контрольная сумма совпала",
-                            update::human_bytes(bytes)
+                            update::human_bytes(bytes, &self.i18n)
                         ),
                         format!("{version} ждёт установки: заработает после перезапуска"),
                     ],
@@ -2513,6 +2537,8 @@ esac
             config,
             tray_available: false,
             tray: None,
+            // The tests assert on the English wording, which is the source language.
+            locale: Locale::SOURCE,
             program: program.to_string_lossy().into_owned(),
             route: Arc::clone(&route) as Arc<dyn RouteProbe>,
             // Not a release, not an AppImage, and no automatic check inside a test's lifetime: a
@@ -3470,6 +3496,7 @@ esac
             config,
             tray_available: false,
             tray: None,
+            locale: Locale::SOURCE,
             program: dir
                 .path()
                 .join("definitely-not-here")
@@ -3527,6 +3554,8 @@ esac
             config,
             tray_available: false,
             tray: None,
+            // The tests assert on the English wording, which is the source language.
+            locale: Locale::SOURCE,
             program: program.to_string_lossy().into_owned(),
             route: test_route(LAN) as Arc<dyn RouteProbe>,
             version,

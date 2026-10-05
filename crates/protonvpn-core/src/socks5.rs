@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::i18n::I18n;
 use crate::net::route::RouteProbe;
 
 /// How long a client has to complete the SOCKS5 handshake before we give up on it.
@@ -100,25 +101,25 @@ pub enum Closed {
 
 impl Closed {
     /// One line for the console and the settings page.
-    pub fn describe(&self) -> String {
+    ///
+    /// It takes a catalogue rather than implementing `Display` because it is a *sentence*, shown to
+    /// a person, and the two callers — the engine's console note and the settings card — are the
+    /// only places it is read. An address inside it is data and is never translated.
+    pub fn describe(&self, i18n: &I18n) -> String {
         match self {
-            Self::Disabled => "прокси выключен".to_string(),
-            Self::NotConnected => "VPN не подключён".to_string(),
-            Self::Unverified { candidate } => {
-                format!("маршрут {candidate} не подтверждён: до подключения он не наблюдался")
-            }
+            Self::Disabled => i18n.proxy_gate_disabled(),
+            Self::NotConnected => i18n.proxy_gate_not_connected(),
+            Self::Unverified { candidate } => i18n.proxy_gate_unverified(candidate.to_string()),
             Self::RouteChanged { expected, observed } => match observed {
-                Some(observed) => format!("маршрут изменился: был {expected}, стал {observed}"),
-                None => format!("маршрут {expected} исчез"),
+                Some(observed) => {
+                    i18n.proxy_gate_route_changed(expected.to_string(), observed.to_string())
+                }
+                None => i18n.proxy_gate_route_gone(expected.to_string()),
             },
-            Self::RouteLost { detail } => format!("маршрут потерян: {detail}"),
-            Self::EgressIsBaseline { ip } => format!(
-                "внешний адрес снова {ip} — тот же, что до подключения: туннель не несёт трафик"
-            ),
-            Self::NotListening { detail } => format!("прокси не слушает: {detail}"),
-            Self::ProbeUnanswered { detail } => {
-                format!("проверка внешнего адреса молчит: {detail}")
-            }
+            Self::RouteLost { detail } => i18n.proxy_gate_route_lost(detail),
+            Self::EgressIsBaseline { ip } => i18n.proxy_gate_egress_baseline(ip.to_string()),
+            Self::NotListening { detail } => i18n.proxy_gate_not_listening(detail),
+            Self::ProbeUnanswered { detail } => i18n.proxy_gate_probe_unanswered(detail),
         }
     }
 }
