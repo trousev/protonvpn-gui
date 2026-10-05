@@ -1,36 +1,35 @@
-# Крайняя левая кнопка свёрнутой панели консоли, пока транскрипт раскрыт: складывает панель обратно
-# в одну строку. Короткая — делит плотную строку со статусом раннера и состоянием соединения.
+# The collapsed console bar's leftmost button while the transcript is open: it folds the pane back
+# down to one line. Short — it shares a dense row with the runner status and the state.
 console-collapse = Свернуть
 
-# Та же кнопка, пока транскрипт свёрнут: она раскрывает панель. Панель во всём этом файле называется
-# «транскриптом»; это слово — и подпись кнопки, и первое слово подписи над блоками.
+# The same button while the transcript is closed: it opens the pane. The pane is called "the
+# transcript" throughout this file; the word is the button's label and the caption's first word.
 console-transcript = Транскрипт
 
-# Кнопка в правом конце строки консоли: прерывает команду, которую выполняет раннер. Видна только
-# пока что-то выполняется, и это выход из команды, которая ждёт того, что никогда не придёт.
-# Короткая и выглядит опасно; панель рядом — собственный вывод CLI, и в неё нельзя печатать.
+# The button at the far right of the console bar that interrupts the command the runner is
+# executing. It is visible only while something runs, and it is the way out of a command waiting
+# for something that will never come. Short, and drawn in the danger colour.
 console-cancel = Прервать
 
-# Замечание в правом конце строки консоли, когда ничего не выполняется, вместо кнопки «Прервать».
-# Надзаголовок: виджет рисует его заглавными. Говорит, что панель — это запись, а не приглашение.
+# The remark at the far right of the console bar when nothing is running, in place of the Cancel
+# button. An eyebrow: the widget draws it in capitals. It says the pane is a record, not a prompt.
 console-read-only = консоль только для чтения
 
-# Подпись слева в строке управления над блоками транскрипта. Со строчной буквы, приглушённая.
-# «дословно» — обещание, ради которого эта панель и существует: она показывает байты CLI, а не наш
-# пересказ.
+# The caption at the left of the control row above the transcript blocks. Lowercase and faint.
+# "verbatim" is the promise this pane exists to keep: it shows the CLI's bytes, not our summary.
 console-transcript-caption = транскрипт · вывод CLI показан дословно
 
-# Кнопка в этой строке управления: прокручивает транскрипт в конец. Короткая — в строке ещё есть
-# «Копировать всё», а транскрипт уходит от конца, пока приходит новый вывод.
+# The button in that control row that scrolls the transcript to its end. Short: the row also
+# carries Copy all, and the transcript scrolls away from the bottom while new output arrives.
 console-bottom = Вниз
 
-# Кнопка рядом: копирует весь транскрипт в буфер обмена. Копируется вывод CLI как он пришёл, вместе
-# со строками команд.
+# The button beside it that copies the whole transcript to the clipboard. It copies the CLI's
+# output as it arrived, including the command lines.
 console-copy-all = Копировать всё
 
-# Мелкая строка над транскриптом, когда лог-бусу пришлось выбросить самые старые вызовы, чтобы
-# удержаться в своём буфере. Ведущее многоточие намеренное и остаётся: оно говорит, что выше что-то
-# пропало. $count — сколько вызовов выброшено, число, а не данные.
+# The faint line above the transcript when the log bus had to throw away the oldest invocations to
+# stay inside its buffer. The leading ellipsis is deliberate and stays: it says something is
+# missing above. $count is how many invocations were dropped — a number, not data.
 console-dropped = { $count ->
         [one] … { $count } более ранний вызов вытеснен из буфера
         [few] … { $count } более ранних вызова вытеснено из буфера
@@ -38,18 +37,18 @@ console-dropped = { $count ->
        *[other] … { $count } более ранних вызовов вытеснено из буфера
     }
 
-# Показывается вместо транскрипта, пока ничего не запускалось. «дословно» снова: это то, что панель
-# обещает, ещё не имея что показать.
+# Shown instead of the transcript when nothing has run yet. "verbatim" again: it is what the pane
+# promises before it has anything to show.
 console-empty = Пока ничего не запускалось. Каждая команда появится здесь дословно.
 
-# Кнопка копирования справа в шапке одного вызова, рядом со строкой его команды. Копирует этот один
-# вызов, а не весь транскрипт. Короткая: шапка — одна моноширинная строка, и команда занимает её
-# почти целиком.
+# The copy button at the right of one invocation's header, beside that invocation's command line.
+# It copies this one invocation, not the whole transcript. Short: the header is a single monospace
+# line and the command itself takes the room.
 console-copy = Копировать
 
-# Мелкая строка внутри блока одного вызова, когда середину слишком длинного вывода выбросили, чтобы
-# консоль осталась читаемой. Как и выше, ведущее многоточие намеренное: строк не хватает.
-# $count — сколько строк не показано, число, а не данные.
+# The faint line inside one invocation's block when the middle of an oversized output was dropped
+# to keep the console readable. As above, the leading ellipsis is deliberate: lines are missing.
+# $count is how many lines are not shown — a number, not data.
 console-lines-hidden = { $count ->
         [one] … { $count } строка скрыта (лимит показа)
         [few] … { $count } строки скрыто (лимит показа)

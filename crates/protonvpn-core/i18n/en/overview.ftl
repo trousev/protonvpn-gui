@@ -100,8 +100,7 @@ overview-egress-source = Source
 overview-egress-changed-note = The address changed — traffic is going through the tunnel.
 
 # The note under those rows when the address did not change. This is the honest reading of a live
-# tunnel that carries nothing, and it says so without softening
-# (docs/architecture.md §13).
+# tunnel that carries nothing, and it says so without softening — docs/architecture.md §13.
 overview-egress-unchanged-note = The address did not change. If the CLI says "connected", the tunnel is not carrying traffic.
 
 # The note under those rows when there is a current reading but no baseline to compare it against —
@@ -160,8 +159,8 @@ overview-port-active = lease active
 # The same header label while a lease has been asked for and the gateway has not answered yet.
 overview-port-pending = asking for a lease
 
-# The same header label when the connected server cannot forward a port at all. "it" is the server
-# feature the card is about; the sentence is a label, not an explanation — that is below.
+# The same header label when the connected server cannot forward a port at all. "it" is port
+# forwarding, not the server; the full sentence is a note below, not here.
 overview-port-unsupported = the server does not support it
 
 # The same header label when the lease failed or cannot be held.

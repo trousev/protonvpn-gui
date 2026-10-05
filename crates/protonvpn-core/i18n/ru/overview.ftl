@@ -1,227 +1,227 @@
-# Надзаголовок над названием страницы «Обзор»: мелкая подпись, называющая страницу. Виджет сам
-# рисует её заглавными буквами — пишите так, как должно читаться, и не набирайте капсом.
+# The eyebrow above the Overview page's title: the small caption that names the page. It is drawn
+# in capitals by the widget, so write it the way it should read and do not capitalise it here.
 overview-page-eyebrow = Обзор
 
-# Название страницы «Обзор», сразу под надзаголовком. Самый крупный текст на странице и её тема,
-# а не состояние туннеля: состояние — в карточке ниже.
+# The Overview page's title, right under that eyebrow. It is the largest text on the page and the
+# page's own subject, not the tunnel's state: the state is the card below it.
 overview-page-title = Соединение
 
-# Кнопка в правом верхнем углу страницы «Обзор». Просит CLI заново выполнить `status`; она ничего
-# не подключает. Короткая: делит строку с названием страницы.
+# The button at the top right of the Overview page. It asks the CLI for a fresh `status`; it does
+# not connect anything. Short: it shares its row with the page title.
 overview-refresh-status = Обновить статус
 
-# Крупная строка в карточке состояния, когда CLI сообщает о живом туннеле. Это сервер и его
-# местоположение в том виде, в каком их напечатал CLI — `NL#818 in Amsterdam, Netherlands`.
-# $server — имя сервера, $location — строка местоположения от CLI; оба значения — данные, и они не
-# переводятся.
+# The big line in the status card when the CLI reports a live tunnel. It is the server and where it
+# is, as the CLI printed them — `NL#818 in Amsterdam, Netherlands`.
+# $server is a server name and $location is the CLI's own location string; both are data and
+# neither is translated.
 overview-status-connected = { $server } в { $location }
 
-# Крупная строка в карточке состояния, пока подключение в процессе. Она заявляет только намерение:
-# CLI ещё не ответил, о туннеле ничего не известно (docs/architecture.md §5).
+# The big line in the status card while a connect is in flight. It claims the intent only: the CLI
+# has not answered yet, so nothing about the tunnel is known (docs/architecture.md §5).
 overview-status-connecting = Подключаюсь…
 
-# Крупная строка в карточке состояния, когда CLI говорит, что туннеля нет.
+# The big line in the status card when the CLI says there is no tunnel.
 overview-status-disconnected = Нет активного туннеля
 
-# Крупная строка в карточке состояния после отказа или ошибки CLI. Собственное сообщение CLI
-# показано дословно в примечании под ней, поэтому здесь сказано только, чей это был ответ.
+# The big line in the status card after the CLI refused or failed. The CLI's own message is shown
+# verbatim in the note underneath, so this line says only whose answer it was.
 overview-status-error = CLI отказал
 
-# Крупная строка в карточке состояния, пока CLI вообще ничего не ответил. Это не ошибка и не
-# «отключено»: пока не известно ничего.
+# The big line in the status card before the CLI has answered anything at all. This is not an error
+# and it is not "disconnected": nothing is known yet.
 overview-status-unknown = Состояние неизвестно
 
-# Примечание под этой строкой и причина, по которой оно есть: неизвестное состояние показывается
-# как неизвестное, а не додумывается (docs/architecture.md §5).
+# The note under that line, and the reason it exists: an unknown state is shown as unknown instead
+# of being guessed at (docs/architecture.md §5).
 overview-status-unknown-note = CLI ещё не отвечал — состояние не выдумывается.
 
-# Главная кнопка карточки состояния, пока туннель поднят. Она туннель и опускает.
+# The status card's main button while a tunnel is up. It tears the tunnel down.
 overview-disconnect = Отключиться
 
-# Главная кнопка карточки состояния, когда туннеля нет. Она подключает выбранное соединение:
-# просьба к CLI, а не обещание результата.
+# The status card's main button when there is no tunnel. It connects the selected connection: a
+# request to the CLI, not a promise about the outcome.
 overview-connect = Подключиться
 
-# Одна из четырёх маленьких плиток под строкой состояния. Подпись виджет рисует заглавными, а
-# значение рядом — данные (имя сервера, город, процент, протокол), и оно не переводится. «Сервер» —
-# это собственный сервер CLI, а не это приложение.
+# One of the four small tiles under the status line. The widget draws the label in capitals and
+# puts a value beside it; the value is data (a server name, a city, a percentage, a protocol) and is
+# never translated. "Server" means the CLI's own server identity, not this application.
 overview-tile-server = Сервер
 
-# Вторая плитка: городская часть строки местоположения от CLI. Значение рядом — данные.
+# The second tile: the city half of the CLI's location string. Data beside it.
 overview-tile-city = Город
 
-# Третья плитка: загрузка сервера в процентах или длинное тире, если CLI её не сообщил.
+# The third tile: the server's load in percent, or an em dash when the CLI did not report one.
 overview-tile-load = Нагрузка
 
-# Четвёртая плитка: протокол, как его назвал CLI (данные).
+# The fourth tile: the protocol the CLI reported, spelled the CLI's way (data).
 overview-tile-protocol = Протокол
 
-# Строка под заголовком состояния: сколько этому состоянию времени и на какое соединение нацелена
-# кнопка «Подключиться». $age — уже переведённая фраза («обновлено 3 минуты назад»); $target — имя
-# выбранного соединения: один из пресетов CLI или профиль, названный пользователем; это данные.
+# The line under the status title: how old this state is, and which connection the Connect button
+# is aimed at. $age is already a translated phrase ("updated 3 mins ago"); $target is the selected
+# connection's name — one of the CLI's presets or a profile the user named — and is data.
 overview-age-and-target = { $age } · соединение: { $target }
 
-# Вердикт рядом с надзаголовком карточки пробы, когда измеренный адрес отличается от измеренного до
-# подключения. Короткий и со строчной буквы: делит строку с надзаголовком и кнопкой.
+# The verdict beside the egress card's eyebrow when the measured address differs from the one
+# measured before connecting. Short and lowercase: it shares its row with the eyebrow and a button.
 overview-egress-changed = адрес изменился
 
-# Вердикт рядом с тем же надзаголовком, когда адрес не изменился. Это не успех — что это значит,
-# объясняет примечание ниже.
+# The verdict beside that eyebrow when the address did not change. It is not a success — the note
+# below it explains what it means.
 overview-egress-unchanged = адрес не изменился
 
-# Надзаголовок карточки пробы внешнего адреса. Надзаголовок: виджет рисует его заглавными.
-# «egress» — адрес, через который уходит трафик; «ground truth» оставлено намеренно: доказательство —
-# измерение, а не самоотчёт CLI (docs/cli-surface.md §4.9).
+# The eyebrow of the egress probe card. An eyebrow: drawn in capitals by the widget.
+# "egress" is the address traffic leaves by; "ground truth" is deliberate — a measurement is the
+# evidence, and the CLI's own report is not (docs/cli-surface.md §4.9).
 overview-egress-eyebrow = Проба egress · ground truth
 
-# Кнопка карточки пробы: выполнить пробу сейчас.
+# The egress card's button: run the probe now.
 overview-egress-measure = Измерить
 
-# Строка факта в карточке пробы: адрес, который измерила проба. Значение рядом — IP-адрес, данные, и
-# он не переводится. «проба» отличает его от любого адреса, который называет CLI.
+# A fact row in the egress card: the address the probe measured. The value beside the label is an
+# IP address — data, never translated. "probe" distinguishes it from any address the CLI reports.
 overview-egress-ipv4 = IPv4 (проба)
 
-# Строка факта в карточке пробы: адрес, измеренный до подключения, — с ним проба и сравнивается.
+# A fact row in the egress card: the address measured before connecting, which the probe is
+# compared against.
 overview-egress-baseline = До подключения
 
-# Строка факта в карточке пробы: страна, которую сообщила служба GeoIP. «справочно» — это честность:
-# базы GeoIP расходятся между собой, так что это ничего не доказывает.
+# A fact row in the egress card: the country the GeoIP service reported. "(advisory)" is the
+# honesty — the geo databases disagree with each other, so this is not evidence of anything.
 overview-egress-country = Страна (справочно)
 
-# Строка факта в карточке пробы: автономная система и организация, которые сообщила служба. Значение —
-# данные; «ASN» — стандартное сокращение и остаётся как есть.
+# A fact row in the egress card: the autonomous system and organisation the service reported. The
+# value is data; "ASN" is the standard abbreviation and stays as it is.
 overview-egress-asn = ASN / организация
 
-# Строка факта в карточке пробы: какая служба ответила на пробу. Значение — данные (имя хоста).
+# A fact row in the egress card: which service answered the probe. The value is data (a host name).
 overview-egress-source = Источник
 
-# Примечание под строками карточки пробы, когда адрес изменился: трафик идёт через туннель.
+# The note under the egress card's rows when the address changed: the tunnel is carrying traffic.
 overview-egress-changed-note = Адрес изменился — трафик идёт через туннель.
 
-# Примечание под теми же строками, когда адрес не изменился. Это честное прочтение живого туннеля,
-# который ничего не несёт, и оно говорит это без смягчений (docs/architecture.md §13).
+# The note under those rows when the address did not change. This is the honest reading of a live
+# tunnel that carries nothing, and it says so without softening — docs/architecture.md §13.
 overview-egress-unchanged-note = Адрес не изменился. Если CLI говорит «подключено», туннель не несёт трафик.
 
-# Примечание под теми же строками, когда текущее измерение есть, а сравнивать не с чем: адрес был
-# прочитан до того, как приложение начало мерить, и потому ничего не доказывает.
+# The note under those rows when there is a current reading but no baseline to compare it against —
+# the address was read before the application started measuring, so it proves nothing.
 overview-egress-no-baseline = Сравнить не с чем: адрес получен до того, как мы начали мерить.
 
-# Примечание под теми же строками, пока ничего не измерено: проба выполняется после подключения, и
-# мерить через ещё не поднятый туннель нечего.
+# The note under those rows before anything has been measured: the probe runs after connecting, so
+# there is no tunnel to measure through yet.
 overview-egress-no-tunnel = Проба выполняется после подключения — туннель не активен.
 
-# Мелкий абзац внизу карточки пробы: почему она не выглядит лишней рядом со статусом. Это записанное
-# словами проектное решение, и оно остаётся резким — CLI может ошибаться в адресе выхода, поэтому
-# измерение важнее его слов.
-# «ifconfig.co/json» — URL, «protonvpn» — программа, которую мы запускаем: и то и другое данные.
+# The faint paragraph at the bottom of the egress card: why this card may look redundant beside the
+# status. It is a design decision written out, and it stays blunt — the CLI can be wrong about the
+# egress address, so the measurement outranks it.
+# "ifconfig.co/json" is a URL and "protonvpn" is the program we run: both are data, not words.
 overview-egress-provenance = Проба к ifconfig.co/json — единственный внешний вызов помимо protonvpn. CLI может ошибаться в адресе выхода, поэтому источник истины — измерение, а не самоотчёт. Страна и ASN — только для чтения: базы GeoIP расходятся между собой.
 
-# Надзаголовок карточки соединений: в ней пресеты CLI и профили пользователя. Надзаголовок: виджет
-# рисует его заглавными.
+# The eyebrow of the connections card, which lists the CLI's presets and the user's profiles. An
+# eyebrow: drawn in capitals.
 overview-connections-eyebrow = Соединения
 
-# Кнопка в шапке этой карточки, справа: открывает редактор на новом профиле.
+# The button in that card's header, at the top right: it opens the profile editor on a new profile.
 overview-connections-add = Добавить соединение
 
-# Мелкая подпись над тремя пресетами. Это собственные сокращения CLI, их нельзя переименовать,
-# изменить или удалить — вот почему у них нет кнопок «Изменить» и «Удалить».
+# The faint caption above the three presets. They are the CLI's own shortcuts and cannot be
+# renamed, edited or deleted — this line is why they have no Edit and Delete buttons.
 overview-connections-system = Системные · не редактируются
 
-# Мелкая подпись над собственными профилями пользователя, под пресетами.
+# The faint caption above the user's own profiles, below the presets.
 overview-connections-mine = Мои соединения
 
-# Показывается вместо списка профилей, когда своих профилей нет. «Добавить соединение» — название
-# кнопки выше, выписанное словами, потому что одно сообщение не может ссылаться на другое.
+# Shown in place of the profile list when the user has none. "Add connection" is the name of the
+# button above it, written out because a message may not refer to another message.
 overview-connections-empty = Пока нет своих соединений. «Добавить соединение» соберёт профиль: страна, город, P2P, Secure Core, Tor и проброс порта.
 
-# Мелкая строка внизу карточки соединений: что бы ни было выбрано, команда всегда одна — подключение
-# к нему.
-# «protonvpn connect» — argv команды, которую мы запустим, данные, и он не переводится.
+# The faint line at the bottom of the connections card: whatever is selected, the command is always
+# a connect for it.
+# "protonvpn connect" is the argv of the command we will run — data, never translated.
 overview-connections-footer = Подключение всегда выполняется для выбранного соединения: protonvpn connect.
 
-# Кнопка переименования и правки в строке собственного профиля. В строке пресета её нет. Короткая, в
-# паре с «Удалить» рядом.
+# The rename-and-edit button on one of the user's own profile rows. Not a preset row: those have no
+# such button. Short, and one of a pair with Delete beside it.
 overview-connection-edit = Изменить
 
-# Кнопка удаления в строке собственного профиля, рядом с «Изменить». Разрушительная и короткая;
-# строка, к которой она относится, и так на экране, поэтому имя профиля не повторяется.
+# The delete button on one of the user's own profile rows, beside Edit. Destructive and short; the
+# row it belongs to is already on screen, so the label does not repeat the profile's name.
 overview-connection-delete = Удалить
 
-# Подпись в шапке карточки проброса порта, в правом конце строки с надзаголовком: для выбранного
-# соединения проброс выключен, показывать нечего. Со строчной буквы, в одну строку, место узкое —
-# надзаголовок слева длинный.
+# The port-forwarding card's header label, at the right end of the row that carries the eyebrow:
+# port forwarding is off for the selected connection, so there is nothing to show. Lowercase, one
+# line, narrow — the eyebrow on its left is long.
 overview-port-off = выключен для этого соединения
 
-# Та же подпись в шапке, пока держится лиз NAT-PMP.
+# The same header label while a NAT-PMP lease is held.
 overview-port-active = аренда активна
 
-# Та же подпись в шапке, пока лиз запрошен, а шлюз ещё не ответил.
+# The same header label while a lease has been asked for and the gateway has not answered yet.
 overview-port-pending = запрашиваю аренду
 
-# Та же подпись в шапке, когда подключённый сервер вообще не умеет пробрасывать порт. «не
-# поддерживает» относится к возможности сервера, о которой эта карточка; это подпись, а не
-# объяснение — объяснение ниже.
+# The same header label when the connected server cannot forward a port at all. "it" is port
+# forwarding, not the server; the full sentence is a note below, not here.
 overview-port-unsupported = сервер не поддерживает
 
-# Та же подпись в шапке, когда лиз не удался или не может держаться.
+# The same header label when the lease failed or cannot be held.
 overview-port-unavailable = недоступен
 
-# Та же подпись в шапке, когда карточка включена, но лиз ещё не запрашивали.
+# The same header label when the card is on but no lease has been asked for yet.
 overview-port-idle = аренды нет
 
-# Надзаголовок карточки проброса порта. Надзаголовок: виджет рисует его заглавными. Речь о лизе
-# NAT-PMP, который этот проброс и обеспечивает.
+# The eyebrow of the port-forwarding card. An eyebrow: drawn in capitals. "Port forwarding" is the
+# feature; the card is about the NAT-PMP lease that provides it.
 overview-port-eyebrow = Порт-форвардинг
 
-# Кнопка рядом с номером порта: копирует его в буфер обмена. Короткая: сам номер нарисован крупно
-# рядом.
+# The button beside the port number that copies it to the clipboard. Short: the number itself is
+# drawn large next to it.
 overview-port-copy = Копировать
 
-# Строка под номером порта: сколько живёт текущий лиз и что он продлевается сам, без просьбы.
-# $seconds — срок лиза в целых секундах, число, а не данные для перевода.
+# The line under the port number: how long the current lease lasts and that it is renewed without
+# being asked. $seconds is the lease lifetime in whole seconds — a number, not data to translate.
 overview-port-lease = аренда { NUMBER($seconds) } с, продлевается автоматически
 
-# Показывается на пару секунд после нажатия кнопки копирования, вместо строки ниже.
+# Shown for a couple of seconds after the copy button is pressed, in place of the line below.
 overview-port-copied = Порт скопирован в буфер обмена
 
-# Строка под номером порта, пока лиз держится, после того как подтверждение копирования погасло:
-# порт не постоянный, а пользователь собирается вставить его куда-то ещё.
+# The line under the port number while a lease is held, after the copy confirmation has faded: the
+# port is not stable, and the user is about to paste it somewhere.
 overview-port-volatile = Порт выдаётся шлюзом и меняется после переподключения.
 
-# Примечание рядом с длинным тире, когда лиз получить не удалось. Это проектное решение, и оно
-# остаётся таким же резким: номер, который никто не продлевает, хуже, чем никакого номера.
+# The note beside the em dash when a lease could not be obtained. It is a design decision and it
+# stays this blunt: a number nobody renews would be worse than no number.
 overview-port-hidden = Порт не показывается намеренно: показывать номер, который никто не продлевает, значит вводить в заблуждение.
 
-# Строка под длинным тире, пока шлюз опрашивается, после отправки запроса. «NAT-PMP» — название
-# протокола, остаётся как есть.
+# The line under the em dash while the gateway is being asked, after the request was sent.
+# "NAT-PMP" is a protocol name and stays as it is.
 overview-port-requesting = Запрашиваю аренду у шлюза через NAT-PMP…
 
-# Строка под длинным тире, когда подключённый сервер не поддерживает проброс порта. «P2P» —
-# собственный термин CLI для серверов, которые его поддерживают.
+# The line under the em dash when the connected server does not support port forwarding. "P2P" is
+# the CLI's own term for the servers that do.
 overview-port-unsupported-note = Этот сервер не поддерживает проброс порта. Подключитесь к P2P-серверу.
 
-# Строка под длинным тире, когда для профиля проброс включён, но лиза нет вообще — его ещё не
-# запрашивали.
+# The line under the em dash when port forwarding is on for the profile but there is no lease at
+# all — nothing has been asked for yet.
 overview-port-none = Аренды нет.
 
-# Подпись переключателя, который решает, просит ли выбранный профиль лиз. Появляется только у профиля
-# пользователя; у пресетов такого переключателя нет.
+# The label of the toggler that decides whether the selected profile asks for a lease. It appears
+# only for a profile the user owns; the presets have no such switch.
 overview-port-keep = Держать аренду для этого профиля
 
-# Показывается вместо этого переключателя, когда выбран системный пресет: пресеты неизменны, а
-# собственные настройки пользователь получает профилем. «Добавить соединение» — название кнопки в
-# карточке соединений, выписанное словами, потому что одно сообщение не может ссылаться на другое.
+# Shown instead of that toggler when a system preset is selected: presets are fixed, and a profile
+# is how a user gets a setting of their own. "Add connection" is the button's label in the
+# connections card, written out because one message may not refer to another.
 overview-port-system-preset = Системные пресеты не редактируются: профиль создаётся кнопкой «Добавить соединение».
 
-# Кнопка, которая просит у шлюза лиз заново, — на случай, когда автоматический запрос не удался.
+# The button that asks the gateway for a lease again, used when the automatic request failed.
 overview-port-refresh = Запросить заново
 
-# Кнопка, которая отдаёт текущий лиз. Стоит рядом с «Запросить заново», в приглушённом стиле: это не
-# аварийная ситуация.
+# The button that gives the current lease up. It sits beside Request again, in the muted style
+# because it is not an emergency.
 overview-port-release = Освободить
 
-# Мелкий абзац внизу карточки проброса порта: откуда берётся номер и почему порт иногда не
-# показывается. Это записанное словами проектное решение, и оно остаётся точным.
-# «10.2.0.1:5351» — адрес, «RFC 6886» — номер документа, «opcode 0» — значение поля: всё это данные
-# и показывается как есть.
+# The faint paragraph at the bottom of the port-forwarding card: where the number comes from, and
+# why a port is sometimes withheld. It is a design decision written out and stays exact.
+# "10.2.0.1:5351" is an address, "RFC 6886" is a document number and "opcode 0" is a field value —
+# all data, all shown as they are.
 overview-port-provenance = Порт выдаётся лизом NAT-PMP у 10.2.0.1:5351 (RFC 6886) только если это включено в выбранном соединении — порт-форвардинг является частью профиля. Перед запросом отправляется opcode 0: если шлюз не отвечает, порт не показывается.
