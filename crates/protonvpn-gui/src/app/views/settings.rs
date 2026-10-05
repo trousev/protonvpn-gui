@@ -2,9 +2,13 @@
 //! settings that are ours.
 //!
 //! Two rules shape it. First, **nothing is invented**: a row exists because the CLI printed that
-//! key in `config list`, and a key we have never seen still appears, under its own name, in
-//! «Общие». Second, every write is followed by a fresh `config list`, because our own command
+//! key in `config list`, and a key we have never seen still appears, under its own name, on the
+//! General tab. Second, every write is followed by a fresh `config list`, because our own command
 //! succeeding is not evidence that the CLI agreed (`docs/architecture.md` §5).
+//!
+//! Every sentence on it comes from the catalogue; what does not is data — the keys `config list`
+//! printed, the values it accepts, an address, a command line. The words around the data are ours
+//! and are translated; the data is shown exactly as it arrived.
 
 use iced::widget::{
     Space, button, checkbox, column, container, pick_list, radio, row, scrollable, text, text_input,
@@ -13,6 +17,7 @@ use iced::{Alignment, Element, Length, Padding, Theme};
 
 use protonvpn_core::config::UpdatePolicy;
 use protonvpn_core::engine::{UpdatePhase, UpdateView};
+use protonvpn_core::i18n::I18n;
 use protonvpn_core::model::Setting;
 use protonvpn_core::socks5::{Closed, GateState};
 use protonvpn_core::update::human_bytes;
@@ -22,7 +27,7 @@ use crate::theme;
 use crate::widgets::{self, Tone};
 
 /// Which of the CLI's settings belong on which tab. A key that appears here is rendered there and
-/// nowhere else; a key the CLI grows tomorrow falls through to «Общие».
+/// nowhere else; a key the CLI grows tomorrow falls through to the General tab.
 fn cli_keys(tab: SettingsTab) -> &'static [&'static str] {
     match tab {
         SettingsTab::General => &["kill-switch", "ipv6", "anonymous-crash-reports"],
@@ -39,7 +44,8 @@ fn cli_keys(tab: SettingsTab) -> &'static [&'static str] {
     }
 }
 
-/// Every key we put somewhere. Anything outside this list is shown in «Общие» rather than hidden.
+/// Every key we put somewhere. Anything outside this list is shown on the General tab rather than
+/// hidden.
 const KNOWN_KEYS: &[&str] = &[
     "netshield",
     "kill-switch",
@@ -54,12 +60,12 @@ const KNOWN_KEYS: &[&str] = &[
 pub(crate) fn view(app: &App) -> Element<'_, Message> {
     let header = row![
         column![
-            widgets::eyebrow("Настройки"),
-            text("Параметры CLI").size(22),
+            widgets::eyebrow(app.i18n.settings_eyebrow()),
+            text(app.i18n.settings_heading()).size(22),
         ]
         .spacing(2)
         .width(Length::Fill),
-        button(text("Прочитать config list").size(13))
+        button(text(app.i18n.settings_refresh()).size(13))
             .padding(Padding::from([8, 14]))
             .style(theme::outlined(theme::BORDER, theme::TEXT))
             .on_press(Message::RefreshSettings),
@@ -94,8 +100,8 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
     if !cli_keys(app.settings_tab).is_empty() {
         content = content.push(cli_card(app, app.settings_tab));
     }
-    // First on «Общие», because it is the one card that may need an answer today — and because the
-    // tray's update item lands here.
+    // First on the General tab, because it is the one card that may need an answer today — and
+    // because the tray's update item lands here.
     if app.settings_tab == SettingsTab::General {
         content = content.push(updates_card(app));
     }
@@ -113,11 +119,8 @@ fn cli_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
         return widgets::card(
             column![
                 widgets::eyebrow("protonvpn config list"),
-                widgets::muted(
-                    "Настройки CLI ещё не прочитаны. Одна команда, около секунды — и здесь \
-                     появится то, что CLI ответил."
-                ),
-                button(text("Прочитать config list").size(13))
+                widgets::muted(app.i18n.settings_unread()),
+                button(text(app.i18n.settings_refresh()).size(13))
                     .padding(Padding::from([8, 14]))
                     .style(theme::filled(theme::ACCENT))
                     .on_press(Message::RefreshSettings),
@@ -156,12 +159,11 @@ fn cli_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
 }
 
 fn setting_row<'a>(app: &'a App, setting: &'a Setting) -> Element<'a, Message> {
-    let (name, description) = match setting_label(&setting.key) {
-        Some((name, description)) => (name.to_string(), description.to_string()),
-        None => (
-            setting.key.clone(),
-            "Ключ, которого нет в описании приложения: показан как есть.".to_string(),
-        ),
+    let (name, description) = match setting_label(&setting.key, &app.i18n) {
+        Some((name, description)) => (name, description),
+        // A key we have never seen keeps its own name and says why there is no description: the
+        // CLI can grow a setting, and hiding it would be worse than showing it undescribed.
+        None => (setting.key.clone(), app.i18n.settings_unknown_key()),
     };
 
     let control: Element<'a, Message> = match setting_values(&setting.key) {
@@ -184,7 +186,7 @@ fn setting_row<'a>(app: &'a App, setting: &'a Setting) -> Element<'a, Message> {
             let options: Vec<Choice> = values
                 .iter()
                 .map(|value| Choice {
-                    label: value_label(&setting.key, value).to_string(),
+                    label: value_label(&setting.key, value, &app.i18n),
                     value: value.to_string(),
                 })
                 .collect();
@@ -203,18 +205,21 @@ fn setting_row<'a>(app: &'a App, setting: &'a Setting) -> Element<'a, Message> {
         None => {
             let key = setting.key.clone();
             row![
-                text_input("значение", app.setting_draft(&setting.key))
-                    .on_input({
-                        let key = key.clone();
-                        move |value| Message::SettingDraft {
-                            key: key.clone(),
-                            value,
-                        }
-                    })
-                    .on_submit(Message::SettingApply { key: key.clone() })
-                    .padding(Padding::from([7, 10]))
-                    .width(Length::Fixed(180.0)),
-                button(text("Применить").size(12))
+                text_input(
+                    &app.i18n.settings_value_placeholder(),
+                    app.setting_draft(&setting.key)
+                )
+                .on_input({
+                    let key = key.clone();
+                    move |value| Message::SettingDraft {
+                        key: key.clone(),
+                        value,
+                    }
+                })
+                .on_submit(Message::SettingApply { key: key.clone() })
+                .padding(Padding::from([7, 10]))
+                .width(Length::Fixed(180.0)),
+                button(text(app.i18n.settings_apply()).size(12))
                     .padding(Padding::from([6, 12]))
                     .style(theme::outlined(theme::BORDER, theme::TEXT))
                     .on_press(Message::SettingApply { key: key.clone() }),
@@ -240,7 +245,7 @@ fn setting_row<'a>(app: &'a App, setting: &'a Setting) -> Element<'a, Message> {
     if setting.key == "custom-dns" && setting.value == "on" {
         details = details.push(
             row![
-                widgets::faint("Серверы"),
+                widgets::faint(app.i18n.settings_dns_servers()),
                 text_input("1.1.1.1,8.8.8.8", &app.dns_servers)
                     .on_input(Message::DnsChanged)
                     .padding(Padding::from([6, 10]))
@@ -265,7 +270,7 @@ fn setting_row<'a>(app: &'a App, setting: &'a Setting) -> Element<'a, Message> {
     .into()
 }
 
-/// A `<select>` option that shows Russian and carries the CLI's value.
+/// A `<select>` option: the words from the catalogue, carrying the CLI's own value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Choice {
     value: String,
@@ -278,16 +283,21 @@ impl std::fmt::Display for Choice {
     }
 }
 
-fn value_label<'a>(key: &str, value: &'a str) -> &'a str {
+/// What one value of a CLI setting is called, in words a person reads. The value itself — `off`,
+/// `malware-only`, `standard` — is data, and for a key we do not describe it is shown as it is
+/// rather than dressed up in words we would have had to invent.
+fn value_label(key: &str, value: &str, i18n: &I18n) -> String {
     match (key, value) {
-        ("netshield", "off") => "выключен",
-        ("netshield", "malware-only") => "только вредоносные",
-        ("netshield", "malware-ads-trackers") => "вредоносные, реклама и трекеры",
-        ("kill-switch", "off") => "выключен",
-        ("kill-switch", "standard") => "стандартный",
-        (_, "on") => "включено",
-        (_, "off") => "выключено",
-        (_, other) => other,
+        ("netshield", "off") => i18n.settings_value_netshield_off(),
+        ("netshield", "malware-only") => i18n.settings_value_netshield_malware_only(),
+        ("netshield", "malware-ads-trackers") => {
+            i18n.settings_value_netshield_malware_ads_trackers()
+        }
+        ("kill-switch", "off") => i18n.settings_value_kill_switch_off(),
+        ("kill-switch", "standard") => i18n.settings_value_kill_switch_standard(),
+        (_, "on") => i18n.settings_value_on(),
+        (_, "off") => i18n.settings_value_off(),
+        (_, other) => other.to_string(),
     }
 }
 
@@ -323,61 +333,52 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
                 widgets::muted(app.i18n.settings_language_hint()),
                 language_options(app),
                 widgets::separator(),
-                widgets::eyebrow("Приложение"),
+                widgets::eyebrow(app.i18n.settings_app_section()),
                 widget_toggle(
                     app.config.autostart,
-                    "Автозапуск",
-                    "Держать ~/.config/autostart/protonvpn-gui.desktop в соответствии с этой \
-                     настройкой.",
+                    app.i18n.settings_autostart_label(),
+                    app.i18n.settings_autostart_hint(),
                     AppToggle::Autostart,
                 ),
                 widget_toggle(
                     app.config.desktop_entry,
-                    "Ярлык в меню приложений",
-                    "Установить .desktop и иконку в ~/.local/share. Это не украшение: на Wayland \
-                     иконки у окна нет, и рабочий стол узнаёт имя и иконку только из .desktop — \
-                     без него GNOME показывает окно как «Неизвестное приложение».",
+                    app.i18n.settings_desktop_entry_label(),
+                    app.i18n.settings_desktop_entry_hint(),
                     AppToggle::DesktopEntry,
                 ),
                 widget_toggle(
                     app.config.start_minimized,
-                    "Запускать свёрнутым в трей",
-                    "Старт без окна: приложение сразу живёт в трее.",
+                    app.i18n.settings_start_minimized_label(),
+                    app.i18n.settings_start_minimized_hint(),
                     AppToggle::StartMinimized,
                 ),
-                widgets::faint(format!(
-                    "Автозапуск: {} · ярлык: {} · настройки приложения хранятся в \
-                     ~/.config/protonvpn-gui/config.json. Файлы официального приложения мы не \
-                     читаем и не пишем.",
+                widgets::faint(app.i18n.settings_files_line(
                     if app.desktop.autostart_enabled() {
-                        "есть"
+                        app.i18n.settings_yes()
                     } else {
-                        "нет"
+                        app.i18n.settings_no()
                     },
                     if app.desktop.entry_installed() {
-                        "есть"
+                        app.i18n.settings_yes()
                     } else {
-                        "нет"
-                    }
+                        app.i18n.settings_no()
+                    },
                 )),
             ]
             .spacing(12),
         ),
         SettingsTab::Connection => widgets::card(
             column![
-                widgets::eyebrow("Приложение"),
+                widgets::eyebrow(app.i18n.settings_app_section()),
                 widget_toggle(
                     app.config.connect_at_startup,
-                    "Подключаться при запуске",
-                    "Поднимает выбранное соединение сразу после старта — в том числе когда окна \
-                     нет и приложение живёт в трее. Если CLI уже сообщает о подключении, туннель \
-                     не трогаем: connect по живому подключению молча меняет сервер.",
+                    app.i18n.settings_connect_at_startup_label(),
+                    app.i18n.settings_connect_at_startup_hint(),
                     AppToggle::ConnectAtStartup,
                 ),
-                widgets::muted(format!(
-                    "Сейчас выбрано: {} · $ {}",
+                widgets::muted(app.i18n.settings_selected_connection(
                     app.selected_name(),
-                    super::overview::selected_argv(app)
+                    super::overview::selected_argv(app),
                 )),
             ]
             .spacing(12),
@@ -387,23 +388,16 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
             let age = app.i18n.age_text(app.shared.state.connection.age());
             widgets::card(
                 column![
-                    widgets::eyebrow("Как мы узнаём состояние"),
-                    widgets::muted(
-                        "protonvpn status стоит около секунды: каждый вызов запускает Python. \
-                         Поэтому опрос устроен так:"
-                    ),
-                    bullet("спокойный режим — не чаще одного раза в 5 минут;"),
-                    bullet("сразу после команды, которая могла изменить туннель;"),
-                    bullet("когда вы смотрите — при открытии окна или клике по трею."),
-                    widgets::note(format!(
-                        "Следствие, которое мы не скрываем: состояние может быть старым. Рядом со \
-                         статусом всегда стоит возраст: {age}."
-                    )),
+                    widgets::eyebrow(app.i18n.settings_polling_eyebrow()),
+                    widgets::muted(app.i18n.settings_polling_intro()),
+                    bullet(app.i18n.settings_polling_idle()),
+                    bullet(app.i18n.settings_polling_after_command()),
+                    bullet(app.i18n.settings_polling_when_you_look()),
+                    widgets::note(app.i18n.settings_polling_consequence(age)),
                     widget_toggle(
                         app.config.probe_enabled,
-                        "Проверять внешний адрес через curl",
-                        "Исключение №1: единственный внешний вызов помимо protonvpn. Отвечает \
-                         на вопрос, которого CLI не может — идёт ли трафик через туннель.",
+                        app.i18n.settings_probe_label(),
+                        app.i18n.settings_probe_hint(),
                         AppToggle::Probe,
                     ),
                 ]
@@ -411,22 +405,25 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
             )
         }
         SettingsTab::Account => {
-            let mut content = column![widgets::eyebrow("Аккаунт")].spacing(12);
+            let mut content =
+                column![widgets::eyebrow(app.i18n.settings_account_eyebrow())].spacing(12);
 
             match app.account_name() {
                 Some(name) => {
                     content = content.push(
                         row![
-                            text(format!("Вы вошли как {name}"))
+                            text(app.i18n.settings_account_signed_in(name))
                                 .size(15)
                                 .width(Length::Fill),
-                            button(text("Выйти").size(13))
+                            button(text(app.i18n.settings_account_logout()).size(13))
                                 .padding(Padding::from([7, 14]))
                                 .style(theme::outlined(theme::BORDER, theme::DANGER))
                                 .on_press(Message::Logout),
                         ]
                         .align_y(Alignment::Center),
                     );
+                    // `protonvpn info` is a command line and `age` is already a sentence: the two
+                    // joined by the same separator the console uses is the whole provenance line.
                     if let Some(age) = app.account_age() {
                         content = content.push(widgets::faint(format!("protonvpn info · {age}")));
                     }
@@ -434,11 +431,9 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
                 None => {
                     content = content.push(
                         row![
-                            widgets::muted(
-                                "Аккаунт не подтверждён: `protonvpn info` не назвал имя."
-                            ),
+                            widgets::muted(app.i18n.settings_account_unconfirmed()),
                             Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
-                            button(text("Войти").size(13))
+                            button(text(app.i18n.settings_account_signin()).size(13))
                                 .padding(Padding::from([7, 14]))
                                 .style(theme::filled(theme::ACCENT))
                                 .on_press(Message::SignInRequested),
@@ -449,22 +444,22 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
             }
 
             content = content.push(widgets::separator());
-            content = content.push(widgets::muted(
-                "Пароль и код 2FA уходят прямо в PTY-терминал процесса CLI и никогда не попадают \
-                 в консоль: она показывает только то, что напечатал CLI.",
-            ));
+            content = content.push(widgets::muted(app.i18n.settings_account_secret_hint()));
 
             content = content.push(match &app.shared.pending_prompt {
                 Some(pending) => column![
-                    widgets::muted(format!("CLI ждёт ввода: {}", prompt_label(pending))),
+                    widgets::muted(
+                        app.i18n
+                            .settings_prompt_waiting(prompt_label(&pending.kind, &app.i18n))
+                    ),
                     row![
-                        text_input("значение", &app.manual_input)
+                        text_input(&app.i18n.settings_value_placeholder(), &app.manual_input)
                             .secure(true)
                             .on_input(Message::ManualInput)
                             .on_submit(Message::ManualSend)
                             .padding(Padding::from([7, 10]))
                             .width(Length::Fixed(260.0)),
-                        button(text("Отправить").size(13))
+                        button(text(app.i18n.settings_send()).size(13))
                             .padding(Padding::from([7, 14]))
                             .style(theme::filled(theme::ACCENT))
                             .on_press(Message::ManualSend),
@@ -474,10 +469,7 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
                 ]
                 .spacing(8)
                 .into(),
-                None => widgets::faint(
-                    "Если CLI задаст вопрос, который мы не смогли распознать, поле появится \
-                     здесь, а сам вопрос будет виден в консоли.",
-                ),
+                None => widgets::faint(app.i18n.settings_account_manual_hint()),
             });
 
             widgets::card(content)
@@ -485,7 +477,7 @@ fn app_card(app: &App, tab: SettingsTab) -> Element<'_, Message> {
     }
 }
 
-fn bullet<'a>(value: &'a str) -> Element<'a, Message> {
+fn bullet<'a>(value: String) -> Element<'a, Message> {
     row![widgets::faint("•"), widgets::muted(value)]
         .spacing(8)
         .into()
@@ -504,7 +496,7 @@ fn socks5_card(app: &App) -> Element<'_, Message> {
     let (tone, headline, advice): (Tone, String, Option<String>) = match view.gate.state() {
         GateState::Open { source } => (
             Tone::Success,
-            format!("открыт · маршрут подтверждён: {source}"),
+            app.i18n.settings_socks5_open(source.to_string()),
             None,
         ),
         GateState::Closed(reason) => {
@@ -512,73 +504,68 @@ fn socks5_card(app: &App) -> Element<'_, Message> {
                 Closed::Disabled | Closed::NotConnected => Tone::Neutral,
                 _ => Tone::Warning,
             };
+            // Every branch says what is true and what to do about it. None of them is an error:
+            // a proxy that cannot show it is protecting you must not claim it is (§13).
             let advice = match &reason {
                 Closed::Disabled => None,
-                Closed::NotConnected => {
-                    Some("Прокси откроется сам, как только CLI сообщит о подключении.".to_string())
+                Closed::NotConnected => Some(app.i18n.settings_socks5_advice_not_connected()),
+                Closed::Unverified { .. } => Some(app.i18n.settings_socks5_advice_unverified()),
+                Closed::RouteChanged { .. } | Closed::RouteLost { .. } => {
+                    Some(app.i18n.settings_socks5_advice_route())
                 }
-                Closed::Unverified { .. } => Some(
-                    "Приложение не видело, каким маршрут был до подключения, и не может \
-                     утверждать, что нынешний — туннель. Переподключитесь (Отключить, затем \
-                     Подключиться): тогда маршрут подтвердится."
-                        .to_string(),
-                ),
-                Closed::RouteChanged { .. } | Closed::RouteLost { .. } => Some(
-                    "Переподключитесь, чтобы подтвердить туннель заново: пока это не сделано, \
-                     прокси не выпустит ни байта."
-                        .to_string(),
-                ),
-                Closed::EgressIsBaseline { .. } => Some(
-                    "Проверка внешнего адреса увидела тот же адрес, что и до подключения. \
-                     Переподключитесь."
-                        .to_string(),
-                ),
-                Closed::ProbeUnanswered { .. } => Some(
-                    "Внешняя проверка туннеля не отвечает: без неё остаётся только локальная \
-                     проверка маршрута, а она видит не всё. Проверьте связь и переподключитесь, \
-                     чтобы туннель подтвердился заново."
-                        .to_string(),
-                ),
+                Closed::EgressIsBaseline { .. } => Some(app.i18n.settings_socks5_advice_egress()),
+                Closed::ProbeUnanswered { .. } => {
+                    Some(app.i18n.settings_socks5_advice_probe_silent())
+                }
                 Closed::NotListening { .. } => {
-                    Some("Проверьте адрес и порт: слушать можно только localhost.".to_string())
+                    Some(app.i18n.settings_socks5_advice_not_listening())
                 }
             };
             (
                 tone,
-                format!("закрыт · {}", reason.describe(&app.i18n)),
+                app.i18n.settings_socks5_closed(reason.describe(&app.i18n)),
                 advice,
             )
         }
     };
 
+    // The counters are numbers and byte counts, not sentences: the byte counts arrive already
+    // written in this language by `human_bytes`, and only the words around them are translated.
+    let mut counters = app.i18n.settings_socks5_counters(
+        stats.accepted.to_string(),
+        stats.refused.to_string(),
+        stats.active.to_string(),
+        human_bytes(stats.up, &app.i18n),
+        human_bytes(stats.down, &app.i18n),
+    );
+    if stats.overloaded > 0 {
+        counters.push_str(&app.i18n.settings_socks5_overloaded(stats.overloaded as i64));
+    }
+
     let mut content = column![
-        widgets::eyebrow("Приложение · SOCKS5"),
-        widgets::muted(
-            "Локальный SOCKS5-прокси для программ, которые должны ходить в сеть только через \
-             VPN: приложение настраивается на этот адрес, а прокси отказывает всему, пока не \
-             подтверждено, что трафик идёт через туннель. Выключено по умолчанию."
-        ),
+        widgets::eyebrow(app.i18n.settings_socks5_eyebrow()),
+        widgets::muted(app.i18n.settings_socks5_intro()),
         checkbox(app.config.socks5.enabled)
-            .label("Включить локальный SOCKS5-прокси")
+            .label(app.i18n.settings_socks5_enable())
             .text_size(13)
             .on_toggle(Message::Socks5Enabled),
         row![
-            widgets::faint("Адрес"),
+            widgets::faint(app.i18n.settings_socks5_address_label()),
             text_input("127.0.0.1", &app.socks5_address)
                 .on_input(Message::Socks5Address)
                 .padding(Padding::from([7, 10]))
                 .width(Length::Fixed(170.0)),
-            widgets::faint("Порт"),
+            widgets::faint(app.i18n.settings_socks5_port_label()),
             text_input("1080", &app.socks5_port)
                 .on_input(Message::Socks5Port)
                 .padding(Padding::from([7, 10]))
                 .width(Length::Fixed(90.0)),
-            widgets::faint("Проверка туннеля, с"),
+            widgets::faint(app.i18n.settings_socks5_verify_label()),
             text_input("30", &app.socks5_verify)
                 .on_input(Message::Socks5Verify)
                 .padding(Padding::from([7, 10]))
                 .width(Length::Fixed(70.0)),
-            button(text("Применить").size(13))
+            button(text(app.i18n.settings_apply()).size(13))
                 .padding(Padding::from([8, 14]))
                 .style(theme::filled(theme::ACCENT))
                 .on_press(Message::Socks5Apply),
@@ -589,7 +576,7 @@ fn socks5_card(app: &App) -> Element<'_, Message> {
         row![
             widgets::status_chip(tone, headline),
             Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
-            button(text("Копировать адрес").size(12))
+            button(text(app.i18n.settings_socks5_copy()).size(12))
                 .padding(Padding::from([6, 12]))
                 .style(theme::outlined(theme::BORDER, theme::TEXT))
                 .on_press(Message::CopySocks5),
@@ -600,26 +587,11 @@ fn socks5_card(app: &App) -> Element<'_, Message> {
             .copied_socks5_at
             .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2))
         {
-            widgets::muted(format!("{} скопирован", app.socks5_address_text()))
+            widgets::muted(app.i18n.settings_socks5_copied(app.socks5_address_text()))
         } else {
-            widgets::faint(format!(
-                "Настройте приложение на {} (SOCKS5, без аутентификации).",
-                app.socks5_address_text()
-            ))
+            widgets::faint(app.i18n.settings_socks5_point_at(app.socks5_address_text()))
         },
-        widgets::muted(format!(
-            "принято {} · отказано {} · активно {} · передано {} / {}{}",
-            stats.accepted,
-            stats.refused,
-            stats.active,
-            human_bytes(stats.up, &app.i18n),
-            human_bytes(stats.down, &app.i18n),
-            if stats.overloaded > 0 {
-                format!(" · нет места {}", stats.overloaded)
-            } else {
-                String::new()
-            },
-        )),
+        widgets::muted(counters),
     ]
     .spacing(12);
 
@@ -627,21 +599,11 @@ fn socks5_card(app: &App) -> Element<'_, Message> {
         content = content.push(widgets::note(advice));
     }
     if !app.config.probe_enabled {
-        content = content.push(widgets::faint(
-            "Внешняя проверка туннеля выключена вместе с проверкой внешнего адреса на вкладке \
-             «Опрос»: остаётся только локальная проверка маршрута, каждые 200 мс.",
-        ));
+        content = content.push(widgets::faint(app.i18n.settings_socks5_probe_off()));
     }
 
-    content = content.push(widgets::faint(
-        "Только localhost и только IPv4; из команд SOCKS5 — только CONNECT. Аутентификации нет: \
-         порт слушает петлевой интерфейс, ровно как у `ssh -D`.",
-    ));
-    content = content.push(widgets::faint(
-        "Маршрут ядра перечитывается каждые 200 мс — без пакетов и без третьих сторон. Раз в \
-         указанное число секунд туннель подтверждается внешним адресом той же проверкой curl, что \
-         и на «Обзоре»; 0 выключает её, локальная проверка остаётся.",
-    ));
+    content = content.push(widgets::faint(app.i18n.settings_socks5_loopback()));
+    content = content.push(widgets::faint(app.i18n.settings_socks5_watchdog()));
 
     widgets::card(content)
 }
@@ -656,12 +618,12 @@ const UPDATE_POLICIES: [UpdatePolicy; 4] = [
     UpdatePolicy::Install,
 ];
 
-fn policy_label(policy: UpdatePolicy) -> &'static str {
+fn policy_label(policy: UpdatePolicy, i18n: &I18n) -> String {
     match policy {
-        UpdatePolicy::Off => "не проверять",
-        UpdatePolicy::Notify => "только сообщать",
-        UpdatePolicy::Download => "скачивать",
-        UpdatePolicy::Install => "скачивать и ставить",
+        UpdatePolicy::Off => i18n.settings_update_policy_off(),
+        UpdatePolicy::Notify => i18n.settings_update_policy_notify(),
+        UpdatePolicy::Download => i18n.settings_update_policy_download(),
+        UpdatePolicy::Install => i18n.settings_update_policy_install(),
     }
 }
 
@@ -688,21 +650,23 @@ fn updates_card(app: &App) -> Element<'_, Message> {
         _ => false,
     };
 
-    let mut checked = format!("Версия: {}", crate::version::label(&app.i18n));
-    match update.checked_at {
-        Some(at) => checked.push_str(&format!(
-            " · страница релизов: {}",
+    let mut checked = app
+        .i18n
+        .settings_updates_version(crate::version::label(&app.i18n));
+    checked.push_str(" · ");
+    checked.push_str(&match update.checked_at {
+        Some(at) => app.i18n.settings_updates_page_age(
             app.i18n.age_text(
                 std::time::SystemTime::now()
                     .duration_since(at)
-                    .unwrap_or_default()
-            )
-        )),
-        None => checked.push_str(" · страницу релизов ещё не спрашивали"),
-    }
+                    .unwrap_or_default(),
+            ),
+        ),
+        None => app.i18n.settings_updates_page_never(),
+    });
 
     let mut buttons = row![
-        button(text("Проверить сейчас").size(13))
+        button(text(app.i18n.settings_updates_check_now()).size(13))
             .padding(Padding::from([8, 14]))
             .style(theme::outlined(theme::BORDER, theme::TEXT))
             .on_press_maybe((!busy).then_some(Message::UpdateCheckNow)),
@@ -712,29 +676,27 @@ fn updates_card(app: &App) -> Element<'_, Message> {
 
     if downloading {
         buttons = buttons.push(
-            button(text("Отменить").size(13))
+            button(text(app.i18n.settings_updates_cancel()).size(13))
                 .padding(Padding::from([8, 14]))
                 .style(theme::outlined(theme::BORDER, theme::DANGER))
                 .on_press(Message::UpdateCancel),
         );
     } else if behind && update.replaceable && !installed {
+        let label = if staged {
+            app.i18n.settings_updates_install()
+        } else {
+            app.i18n.settings_updates_download_install()
+        };
         buttons = buttons.push(
-            button(
-                text(if staged {
-                    "Установить"
-                } else {
-                    "Скачать и установить"
-                })
-                .size(13),
-            )
-            .padding(Padding::from([8, 14]))
-            .style(theme::filled(theme::ACCENT))
-            .on_press(Message::UpdateInstall),
+            button(text(label).size(13))
+                .padding(Padding::from([8, 14]))
+                .style(theme::filled(theme::ACCENT))
+                .on_press(Message::UpdateInstall),
         );
     }
     if behind && !update.dismissed && !installed {
         buttons = buttons.push(
-            button(text("Не напоминать").size(12))
+            button(text(app.i18n.settings_updates_dismiss()).size(12))
                 .padding(Padding::from([6, 12]))
                 .style(theme::bare())
                 .on_press(Message::UpdateDismiss),
@@ -745,7 +707,7 @@ fn updates_card(app: &App) -> Element<'_, Message> {
     for policy in UPDATE_POLICIES {
         options = options.push(
             radio(
-                policy_label(policy),
+                policy_label(policy, &app.i18n),
                 policy,
                 Some(app.config.update.policy),
                 Message::UpdatePolicySelected,
@@ -756,13 +718,8 @@ fn updates_card(app: &App) -> Element<'_, Message> {
     }
 
     let mut content = column![
-        widgets::eyebrow("Приложение · Обновления"),
-        widgets::muted(
-            "AppImage не обновляет никто, кроме него самого: приложение спрашивает свою страницу \
-             релизов, сверяет скачанное с SHA256SUMS из того же релиза и подменяет файл на месте. \
-             Скачанное никогда не запускается само — новая версия заработает при следующем \
-             запуске, а предыдущая остаётся рядом как <имя>.old на один запуск."
-        ),
+        widgets::eyebrow(app.i18n.settings_updates_eyebrow()),
+        widgets::muted(app.i18n.settings_updates_intro()),
         options,
         widgets::faint(checked),
         widgets::separator(),
@@ -772,29 +729,17 @@ fn updates_card(app: &App) -> Element<'_, Message> {
         ]
         .align_y(Alignment::Center),
         buttons,
-        widgets::faint(
-            "Проверка — раз в сутки и через десять секунд после запуска; политика решает, что \
-             приложение делает само, а кнопки работают всегда. Новая версия начинает работать \
-             после перезапуска: подмена не трогает уже запущенный процесс."
-        ),
+        widgets::faint(app.i18n.settings_updates_footnote()),
     ]
     .spacing(12);
 
     if let Some(error) = &update.error {
-        content = content.push(widgets::note(format!(
-            "Последняя попытка не удалась: {error}"
-        )));
+        content = content.push(widgets::note(app.i18n.settings_updates_error(error)));
     }
     if !update.replaceable {
-        content = content.push(widgets::note(
-            "Эта сборка не AppImage (или запущена не из образа): подменить себя она не может. \
-             Обновление придётся скачать со страницы релизов вручную.",
-        ));
+        content = content.push(widgets::note(app.i18n.settings_updates_not_replaceable()));
     }
-    content = content.push(widgets::faint(
-        "SHA256SUMS закрывает обрыв, порчу и зеркало, отдающее вчерашний образ, но не подмену на \
-         стороне GitHub: подлинность проверяется отдельно, `gh attestation verify` — SECURITY.md.",
-    ));
+    content = content.push(widgets::faint(app.i18n.settings_updates_sums()));
 
     widgets::card(content)
 }
@@ -803,48 +748,49 @@ fn updates_card(app: &App) -> Element<'_, Message> {
 /// status line usually gets wrong are spelled out: "downloaded" is not "installed", and "installed"
 /// is not "running".
 fn update_headline(update: &UpdateView, app: &App) -> (Tone, String) {
+    let i18n = &app.i18n;
     match &update.phase {
-        UpdatePhase::Checking => (Tone::Neutral, "спрашиваем страницу релизов…".to_string()),
+        UpdatePhase::Checking => (Tone::Neutral, i18n.settings_update_checking()),
         UpdatePhase::Downloading { received, total } => (
             Tone::Neutral,
             match total {
-                Some(total) => format!(
-                    "качаем {} из {}",
-                    human_bytes(*received, &app.i18n),
-                    human_bytes(*total, &app.i18n)
+                Some(total) => i18n.settings_update_downloading(
+                    human_bytes(*received, i18n),
+                    human_bytes(*total, i18n),
                 ),
-                None => format!("качаем {}", human_bytes(*received, &app.i18n)),
+                None => i18n.settings_update_downloading_unknown(human_bytes(*received, i18n)),
             },
         ),
         UpdatePhase::Staged { version } => (
             Tone::Warning,
-            format!("{version} скачана и проверена — ждёт перезапуска"),
+            i18n.settings_update_staged(version.to_string()),
         ),
         UpdatePhase::Installed { version } => (
             Tone::Success,
-            format!("{version} на месте — заработает после перезапуска"),
+            i18n.settings_update_installed(version.to_string()),
         ),
         UpdatePhase::Idle => match (update.current, update.latest) {
             // "Never asked" and "asked, and there was nothing" are different answers, and the
             // second one is what a build older than the naming convention will actually see.
             (_, None) if update.checked_at.is_none() => {
-                (Tone::Neutral, "ещё не проверяли".to_string())
+                (Tone::Neutral, i18n.settings_update_never_checked())
             }
-            (_, None) => (
-                Tone::Neutral,
-                "в последнем релизе нет образа, который я мог бы поставить".to_string(),
+            (_, None) => (Tone::Neutral, i18n.settings_update_no_image()),
+            (Some(current), Some(latest)) if current < latest => (
+                Tone::Warning,
+                i18n.settings_update_available(latest.to_string()),
             ),
-            (Some(current), Some(latest)) if current < latest => {
-                (Tone::Warning, format!("доступна {latest}"))
-            }
             (Some(current), Some(latest)) if current > latest => (
                 Tone::Success,
-                format!("{current} — новее последнего релиза ({latest})"),
+                i18n.settings_update_ahead(current.to_string(), latest.to_string()),
             ),
-            (Some(current), _) => (Tone::Success, format!("{current} — последняя версия")),
+            (Some(current), _) => (
+                Tone::Success,
+                i18n.settings_update_current(current.to_string()),
+            ),
             (None, Some(latest)) => (
                 Tone::Neutral,
-                format!("последний релиз: {latest}; эта сборка без версии"),
+                i18n.settings_update_versionless(latest.to_string()),
             ),
         },
     }
@@ -852,20 +798,14 @@ fn update_headline(update: &UpdateView, app: &App) -> (Tone, String) {
 
 fn widget_toggle<'a>(
     value: bool,
-    label: &'a str,
-    description: &'a str,
+    label: String,
+    description: String,
     which: AppToggle,
 ) -> Element<'a, Message> {
     container(
         row![
-            container(
-                column![
-                    text(label.to_string()).size(14),
-                    widgets::muted(description.to_string()),
-                ]
-                .spacing(3),
-            )
-            .width(Length::Fill),
+            container(column![text(label).size(14), widgets::muted(description)].spacing(3),)
+                .width(Length::Fill),
             iced::widget::toggler(value)
                 .text_size(13)
                 .on_toggle(move |value| Message::Toggle(which, value)),
@@ -879,39 +819,55 @@ fn widget_toggle<'a>(
     .into()
 }
 
-fn prompt_label(pending: &protonvpn_core::engine::PendingPrompt) -> &'static str {
-    match pending.kind {
-        protonvpn_core::interpreter::PromptKind::Password => "пароль",
-        protonvpn_core::interpreter::PromptKind::TwoFactor => "код 2FA",
+/// What the CLI is waiting for, in words a person reads. The kind is the interpreter's reading of
+/// the CLI's own prompt; the prompt itself stays in the console, verbatim.
+fn prompt_label(kind: &protonvpn_core::interpreter::PromptKind, i18n: &I18n) -> String {
+    match kind {
+        protonvpn_core::interpreter::PromptKind::Password => i18n.settings_prompt_password(),
+        protonvpn_core::interpreter::PromptKind::TwoFactor => i18n.settings_prompt_two_factor(),
         protonvpn_core::interpreter::PromptKind::Unrecognised => {
-            "неопознанный запрос — смотрите консоль"
+            i18n.settings_prompt_unrecognised()
         }
     }
 }
 
-/// What a CLI setting is called, in words a person reads. `None` for a key we have never seen:
-/// the settings tab still shows it, under its own name, rather than hiding it.
-pub fn setting_label(key: &str) -> Option<(&'static str, &'static str)> {
+/// What a CLI setting is called, in words a person reads: its name and the sentence under it.
+/// `None` for a key we have never seen — the settings tab still shows it, under its own name,
+/// rather than hiding it.
+///
+/// The key itself is data and is never translated, and so are Proton's own names for its features:
+/// NetShield, Kill switch, VPN Accelerator, Moderate NAT and IPv6 are the same words in every
+/// language, which is what their catalogue entries say.
+pub fn setting_label(key: &str, i18n: &I18n) -> Option<(String, String)> {
     Some(match key {
         "netshield" => (
-            "NetShield",
-            "Блокировать вредоносные домены на уровне DNS шлюза.",
+            i18n.settings_name_netshield(),
+            i18n.settings_hint_netshield(),
         ),
-        "kill-switch" => ("Kill switch", "Блокировать трафик, если туннель падает."),
+        "kill-switch" => (
+            i18n.settings_name_kill_switch(),
+            i18n.settings_hint_kill_switch(),
+        ),
         "port-forwarding" => (
-            "Порт-форвардинг",
-            "Разрешить серверу выдавать проброшенный порт. Аренду держим мы, через NAT-PMP.",
+            i18n.settings_name_port_forwarding(),
+            i18n.settings_hint_port_forwarding(),
         ),
         "custom-dns" => (
-            "Свои DNS",
-            "Использовать указанные DNS-серверы внутри туннеля.",
+            i18n.settings_name_custom_dns(),
+            i18n.settings_hint_custom_dns(),
         ),
-        "vpn-accelerator" => ("VPN Accelerator", "Ускорение на дальних серверах."),
-        "moderate-nat" => ("Moderate NAT", "Мягкий NAT для игр и P2P."),
-        "ipv6" => ("IPv6", "Пропускать IPv6 внутри туннеля."),
+        "vpn-accelerator" => (
+            i18n.settings_name_vpn_accelerator(),
+            i18n.settings_hint_vpn_accelerator(),
+        ),
+        "moderate-nat" => (
+            i18n.settings_name_moderate_nat(),
+            i18n.settings_hint_moderate_nat(),
+        ),
+        "ipv6" => (i18n.settings_name_ipv6(), i18n.settings_hint_ipv6()),
         "anonymous-crash-reports" => (
-            "Анонимные отчёты о сбоях",
-            "Отправлять краш-логи без привязки к аккаунту.",
+            i18n.settings_name_anonymous_crash_reports(),
+            i18n.settings_hint_anonymous_crash_reports(),
         ),
         _ => return None,
     })
@@ -920,11 +876,20 @@ pub fn setting_label(key: &str) -> Option<(&'static str, &'static str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protonvpn_core::i18n::Locale;
+
+    /// The catalogue the application is written in. Tests run in the source language, so a test
+    /// that asserts wording asserts English; a test *about* another language builds that catalogue
+    /// itself, as `russian_declines_what_english_does_not` does.
+    fn english() -> I18n {
+        I18n::new(Locale::SOURCE)
+    }
 
     #[test]
     fn every_setting_we_label_is_one_the_cli_actually_has() {
         // The list is `protonvpn config list` on 1.0.3 (`docs/cli-surface.md` §1). If the CLI
         // grows a key we do not know, it still shows up — under its own name.
+        let i18n = english();
         for key in [
             "netshield",
             "kill-switch",
@@ -935,10 +900,112 @@ mod tests {
             "ipv6",
             "anonymous-crash-reports",
         ] {
-            assert!(setting_label(key).is_some(), "{key}");
+            let (name, hint) = setting_label(key, &i18n).unwrap_or_else(|| panic!("{key}"));
+            assert!(!name.is_empty(), "{key}");
+            assert!(!hint.is_empty(), "{key}");
             assert!(setting_values(key).is_some(), "{key}");
         }
-        assert!(setting_label("split-tunneling").is_none());
-        assert!(setting_label("auto-connect").is_none());
+        assert!(setting_label("split-tunneling", &i18n).is_none());
+        assert!(setting_label("auto-connect", &i18n).is_none());
+    }
+
+    /// The names Proton gives its own features are the same words in every language, and the
+    /// catalogue entry is where that decision is written down rather than a literal in the view.
+    #[test]
+    fn a_name_we_do_not_translate_comes_from_the_catalogue_anyway() {
+        let i18n = english();
+        let (name, hint) = setting_label("netshield", &i18n).unwrap();
+        assert_eq!(name, "NetShield");
+        assert_eq!(hint, "Block malicious domains at the gateway's DNS level.");
+
+        let (name, hint) = setting_label("kill-switch", &i18n).unwrap();
+        assert_eq!(name, "Kill switch");
+        assert_eq!(hint, "Block traffic if the tunnel drops.");
+
+        let (name, _) = setting_label("port-forwarding", &i18n).unwrap();
+        assert_eq!(name, "Port forwarding");
+    }
+
+    /// `protonvpn config list` prints values, not words: the picker shows our words for the ones we
+    /// describe, and the CLI's own value for the ones we do not.
+    #[test]
+    fn a_value_is_ours_when_we_describe_it_and_the_clis_when_we_do_not() {
+        let i18n = english();
+        assert_eq!(value_label("netshield", "off", &i18n), "Off");
+        assert_eq!(
+            value_label("netshield", "malware-only", &i18n),
+            "Malware only"
+        );
+        assert_eq!(
+            value_label("netshield", "malware-ads-trackers", &i18n),
+            "Malware, ads and trackers"
+        );
+        assert_eq!(value_label("kill-switch", "standard", &i18n), "Standard");
+        assert_eq!(value_label("ipv6", "on", &i18n), "On");
+        // A key or a value we do not describe is data, and data is shown as it arrived.
+        assert_eq!(
+            value_label("something-new", "some-value", &i18n),
+            "some-value"
+        );
+    }
+
+    /// One test about Russian, because that is where a copy of the English would still compile and
+    /// still be wrong: the value names agree with the setting they describe, the generic ones do not
+    /// agree the same way, and a count of sessions needs three forms where English needs two.
+    #[test]
+    fn russian_declines_what_english_does_not() {
+        let russian = I18n::new(Locale::from_id("ru").unwrap());
+        assert_eq!(value_label("netshield", "off", &russian), "выключен");
+        assert_eq!(value_label("kill-switch", "off", &russian), "выключен");
+        assert_eq!(value_label("ipv6", "off", &russian), "выключено");
+        let (name, hint) = setting_label("netshield", &russian).unwrap();
+        // Proton's own name is not translated, and neither is the fact that it blocks at the DNS
+        // level of the gateway.
+        assert_eq!(name, "NetShield");
+        assert!(hint.contains("DNS"), "{hint}");
+
+        // CLDR's categories, not English's: 1 and 21 are `one`, 3 is `few`, 5 is `many`.
+        assert_eq!(
+            russian.settings_socks5_overloaded(1),
+            "· нет места ещё для 1 сессии"
+        );
+        assert_eq!(
+            russian.settings_socks5_overloaded(3),
+            "· нет места ещё для 3 сессий"
+        );
+        assert_eq!(
+            russian.settings_socks5_overloaded(5),
+            "· нет места ещё для 5 сессий"
+        );
+        assert_eq!(
+            russian.settings_socks5_overloaded(21),
+            "· нет места ещё для 21 сессии"
+        );
+    }
+
+    /// The same count in English, which has two forms and no more.
+    #[test]
+    fn an_english_count_has_two_forms() {
+        let i18n = english();
+        assert_eq!(
+            i18n.settings_socks5_overloaded(1),
+            "· no room left for 1 more session"
+        );
+        assert_eq!(
+            i18n.settings_socks5_overloaded(3),
+            "· no room left for 3 more sessions"
+        );
+    }
+
+    /// The three prompts the interpreter recognises are three different answers, and an
+    /// unrecognised one says where the question can actually be read.
+    #[test]
+    fn every_prompt_kind_has_its_own_words() {
+        use protonvpn_core::interpreter::PromptKind;
+
+        let i18n = english();
+        assert_eq!(prompt_label(&PromptKind::Password, &i18n), "password");
+        assert_eq!(prompt_label(&PromptKind::TwoFactor, &i18n), "2FA code");
+        assert!(prompt_label(&PromptKind::Unrecognised, &i18n).contains("console"));
     }
 }
