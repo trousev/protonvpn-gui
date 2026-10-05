@@ -30,6 +30,12 @@ each exists because the CLI genuinely cannot do the job.
 | 1 | `curl` to an IP-echo service | ground truth: the CLI's self-report is unreliable (measured: it printed `149.88.27.213` while real egress was `149.22.89.89`) | read-only, third party, keyless, no Proton data involved |
 | 2 | NAT-PMP to `10.2.0.1:5351` | the port-forwarding lease — the CLI only sets a preference and tells the user to run an external script | gateway is publicly documented by Proton, port is an IANA standard (RFC 6886); probe with opcode 0 first, degrade honestly |
 | 3 | A local SOCKS5 listener, and the kernel's route answer behind it | an application that must never touch the network without the VPN needs a door that closes by itself; nothing in `protonvpn` provides one | **off by default**, loopback only, IPv4 + `CONNECT` only, fails closed on evidence rather than on hope (§13) |
+| 4 | `curl` to our own release page | an AppImage has no package manager behind it, and the file that would have to be replaced is the one currently running | two URLs, both ours — the `SHA256SUMS` of the latest release and the asset that file names — https only; the bytes are checked against that file; **nothing downloaded is ever executed**: the new image takes effect at the next start (§14) |
+
+The updater is the newest of them and the least entangled with the VPN: it speaks to nobody but
+this project's own release page, it has never heard of Proton, and it can change nothing about a
+connection. It is still an exception, because it runs a program that is not `protonvpn` and writes
+a file that will later be executed — so it is written down, bounded, and off the command path (§14).
 
 An exception was tried and withdrawn: an opt-in push of the forwarded port into a local
 qBittorrent over its Web API. It never worked against a real client, and a convenience for one
@@ -69,6 +75,13 @@ and `app-config.json`.
         ┌──────────────────────────────────────────────┐
         │  GROUND TRUTH PROBE   (exception #1)        │
         │  curl <ip-echo service>                      │
+        └──────────────────────────────────────────────┘
+
+        ┌──────────────────────────────────────────────┐
+        │  APPIMAGE UPDATER     (exception #4)        │
+        │  curl SHA256SUMS → curl image → rename       │
+        │  (never executed; the next start is the new  │
+        │   build, and the old one is kept until then) │
         └──────────────────────────────────────────────┘
 ```
 
@@ -632,3 +645,128 @@ Two deliberate exceptions to the logging rule, both bounded:
   transcript that is supposed to be read. Its *reading* is state like any other: it lands in
   `Egress::current` and the Overview shows it with its age (§7). What the console gets is the
   conclusion: a gate that closed, and why.
+
+---
+
+## 14. The AppImage updater — exception #4
+
+An AppImage is a file. Nothing upgrades it: no package manager owns it, no repository knows about
+it, and the file that has to be replaced is the one currently running. Left alone, an installed
+image rots — the user learns about a release by reading the releases page, downloads a second
+`ProtonVPN-GUI-…-x86_64.AppImage` next to the first, and has to remember which one is which.
+
+So the application updates itself, and this section is the bound it does that within. Three URLs of
+our own, one hash, one rename, and **no execution of anything new**:
+
+```
+check    curl https://github.com/trousev/protonvpn-gui/releases/latest/download/SHA256SUMS
+decide   ── the version in the asset's own name, compared with the one baked into this build
+fetch    curl …/releases/download/<version>/ProtonVPN-GUI-<version>-<arch>.AppImage -o <path>.update
+verify   sha256 == the one from SHA256SUMS, and the file really is a type-2 AppImage
+install  hard link <path> → <path>.old, then rename() <path>.update → <path>
+```
+
+### 14.1 What the user is told, and what actually happens
+
+**`off` / `notify` / `download` / `install`.** `download` is the default: an image that never
+updates is the problem this exists to solve, and downloading is not installing — the verified file
+waits next to the running one, and the user decides when. Every step remains available as an
+explicit action whatever the policy says, because a button that refuses to work is a lie; the
+policy governs what happens *on its own*.
+
+**Nothing downloaded is ever executed.** No `--appimage-extract-and-run`, no self-restart, no
+`exec`. The new image takes effect the next time the user starts the application, and until then
+the running process keeps the file it was started from — an AppImage's runtime holds the image
+open, so the rename is invisible to it.
+
+**The state is shown with its age, like everything else** (§7): `updated 5 hours ago` next to the
+`SHA256SUMS` reading, and a card that distinguishes the four things a status line usually
+conflates — *nothing checked yet*, *a release is available*, *a verified image is waiting for a
+restart*, and *the new image is on disk while the old build is still the one running*.
+
+**Failures are stated, not retried into noise.** A check that could not answer keeps its error and
+its age, and is retried in six hours rather than on the next tick; a download that failed leaves
+nothing behind and says why.
+
+### 14.2 How the version is known
+
+The version is `X.Y.N` — `X.Y` the line's base tag, `N` the commit count — and it is defined once,
+in `scripts/version.sh`, because two things must agree about it: `scripts/release.sh` publishes the
+tag, and `packaging/appimage/build.sh` bakes the same string into the binary. An image that
+believed it was `0.1.42` while being published as `0.1.43` would offer an update to itself forever
+and never apply one, so the release also refuses to publish an AppImage whose name does not carry
+its own version. `protonvpn-gui --version` prints it.
+
+The updater does **not** use the GitHub API. `releases/latest/download/SHA256SUMS` is a permanent
+URL that follows to whatever was published most recently, and the version is inside the asset's
+name — so the version and the checksum arrive in the same document, there is no rate limit to hit
+and no JSON schema of someone else's to track. The price is that the file name is a contract
+between the packaging script, the release script and `update.rs`; tests pin it on both sides.
+
+Releases published before the name carried a version — everything up to and including `0.1.20` —
+cannot be installed from, because there is no version in the name to read: the updater reports that
+it found nothing it could become, which is the truth, and the next release is the first it can act
+on.
+
+A build with no baked version — a plain `cargo build` — says so and compares nothing. It is not
+treated as older than the latest release, because a development build that guessed would replace
+itself with a release.
+
+### 14.3 What the checksum proves, and what it does not
+
+`SHA256SUMS` is fetched over the same connection as the image and from the same origin. That is
+worth having: it catches a truncated download, a proxy that injected something, a mirror serving
+yesterday's file, and a resumed transfer that went wrong. **It is not proof of authorship.** An
+attacker who can answer for `github.com` — a compromised release, a TLS middlebox with a trusted
+certificate — can serve both the image and the checksum, and this check would agree with itself.
+
+What closes that gap is the build-provenance attestation the release already carries, checked by
+hand:
+
+```sh
+gh attestation verify ProtonVPN-GUI-<version>-x86_64.AppImage --repo trousev/protonvpn-gui
+```
+
+The honest upgrade would be a signature verified against a key pinned in the binary, which needs no
+third party and no network. It is not in this version, and this section says so rather than
+implying the checksum is more than it is. `SECURITY.md` repeats it in the place a reader looks for
+it.
+
+The second check is the shape: an ELF with `AI\x02` at offset 8, which is what the pinned type-2
+runtime produces. A captive portal's error page agrees perfectly with a checksum file served from
+the same portal, and is caught by not being an AppImage at all.
+
+### 14.4 The swap
+
+The rename is within one directory and therefore atomic, and the old image is made reachable as
+`<name>.old` by a **hard link before** the rename — so there is no instant in which the installed
+path is missing a file, not even for the release path itself. The directory is flushed afterwards,
+because a rename is atomic but not durable: without it a crash can leave no image under either
+name. The file's mode is copied from the one it replaces, and symlinks are resolved first —
+replacing a symlink would leave the real image untouched, which is an "update" that reports success
+and changes nothing.
+
+The copy is deleted at the next start, and only when the installed image is there: this process is
+that image, so it started, so the copy is only disk space — and if the image is missing, the copy
+is the last one of anything and this program has no business deleting it.
+
+**Where it cannot write, it says so** — before downloading anything, because "nowhere to put it" is
+worth knowing before 70 MB. A root-owned image in `/opt` is a `NotWritable` message and a manual
+download; this application never runs `sudo` and never gains a privilege path. A build that is not
+an AppImage at all — the tarball, a `cargo run` — reports what the release page says and offers
+nothing, because there is nothing it could truthfully offer.
+
+### 14.5 What it deliberately is not
+
+- **Not a delta update.** `AppImageUpdate` and zsync are the ecosystem's answer and they transfer
+  less, but they need `.zsync` metadata published beside every release and a third-party AppImage
+  to run on the user's machine — a fourth program, and a worse hole than `curl`. If the metadata is
+  ever published, that is a separate decision with its own bounds.
+- **Not a package manager.** The tarball install is not managed, not tracked and not replaced.
+- **Not a notifier.** The tray item is a menu entry, never a desktop notification: notifications
+  would be a new sanctioned exception and a new way to interrupt someone, for a fact they can see
+  when they look.
+- **Never on the command path.** The check and the download live off the engine's thread and off
+  the runner's queue; a `curl` in flight has no more to do with `protonvpn status` than the probe
+  does. Cancelling kills the child and deletes the partial file — a partly verified image is not
+  something to keep.

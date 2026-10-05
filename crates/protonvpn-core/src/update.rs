@@ -941,6 +941,17 @@ mod tests {
     }
 
     #[test]
+    fn a_release_from_before_the_naming_change_is_reported_and_not_guessed_at() {
+        // The real `SHA256SUMS` of release 0.1.20 — the last one published before the asset's name
+        // carried the version. The updater learns the version *from that name*, so this release
+        // cannot be installed from, and saying so is the only honest answer. It also pins the
+        // format against a file a real release produced rather than one a test wrote.
+        let body = "22a73dd65dae76738b301b2913a274b15331cc32f678aab3eeb0f344556673a6  protonvpn-gui-0.1.20-x86_64-linux.tar.gz\n70c8c123460c7d127d05d25b2b676965f4548a823467114e8615094c0b3cb8a5  ProtonVPN-GUI-x86_64.AppImage\n";
+        let error = parse_sums(body).unwrap_err();
+        assert!(matches!(error, UpdateError::NoAsset(_)), "{error:?}");
+    }
+
+    #[test]
     fn binary_mode_and_extra_whitespace_are_still_sha256sum_output() {
         let version = Version::parse("0.1.7").unwrap();
         let body = format!("{} *{}\n", "d".repeat(64), asset_name(version));
