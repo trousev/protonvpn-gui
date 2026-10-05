@@ -384,10 +384,15 @@ mod tests {
 
     #[test]
     fn a_locale_tag_falls_back_to_its_language() {
+        // Spelled against the tags the test itself names, never against "a language we do not
+        // carry": adding a locale must not be able to fail a test about tag parsing. `zz` is the
+        // reserved-for-local-use code, so nothing this build ever ships will be it.
         assert_eq!(from_tag("ru_RU.UTF-8"), Locale::from_id("ru"));
         assert_eq!(from_tag("en_GB"), Locale::from_id("en"));
+        assert_eq!(from_tag("ru@petr1708"), Locale::from_id("ru"));
         assert_eq!(from_tag("C"), None);
-        assert_eq!(from_tag("de_DE"), None);
+        assert_eq!(from_tag("POSIX"), None);
+        assert_eq!(from_tag("zz_ZZ"), None);
         assert_eq!(from_tag(""), None);
     }
 }

@@ -46,7 +46,7 @@ impl Tone {
     }
 }
 
-/// The small uppercase caption above a block: `ОБЗОР`, `СОЕДИНЕНИЯ`.
+/// The small uppercase caption above a block: `OVERVIEW`, `CONNECTIONS`.
 pub fn eyebrow<'a, M: 'a>(value: impl Into<String>) -> Element<'a, M> {
     text(value.into().to_uppercase())
         .size(11)
@@ -105,7 +105,7 @@ pub fn dot<'a, M: 'a>(color: iced::Color) -> Element<'a, M> {
     .into()
 }
 
-/// A status chip: `● Отключено`. The dot and the words share the tone; the words themselves are
+/// A status chip: `● Disconnected`. The dot and the words share the tone; the words themselves are
 /// the caller's, because only the caller knows what is actually known.
 pub fn status_chip<'a, M: 'a>(tone: Tone, label: impl Into<String>) -> Element<'a, M> {
     let color = tone.color();
@@ -133,7 +133,7 @@ pub fn card<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
         .into()
 }
 
-/// One of the four facts under the connection status: `СЕРВЕР / NL#818`. The label is taken by
+/// One of the four facts under the connection status: `SERVER / NL#818`. The label is taken by
 /// value because it comes from the catalogue: a message is formatted per frame, so it cannot be a
 /// `&'a str` borrowed for as long as the element lives.
 pub fn tile<'a, M: 'a>(label: impl Into<String>, value: impl Into<String>) -> Element<'a, M> {

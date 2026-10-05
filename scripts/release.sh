@@ -218,9 +218,9 @@ fi
 notes_file="dist/${tag}-notes.md"
 origin_repo="$(git remote get-url origin | sed -E 's#(git@|https?://)[^/:]+[:/]##; s#\.git$##')"
 {
-    echo "Собрано из коммита \`$(git rev-parse --short HEAD)\`."
+    echo "Built from commit \`$(git rev-parse --short HEAD)\`."
     echo
-    echo "Изменения:"
+    echo "Changes:"
     echo
     previous="$(release_tags | grep -E "^${base}\.[0-9]+$" | sort -V | tail -1 || true)"
     if [[ -n "$previous" ]]; then
@@ -229,7 +229,7 @@ origin_repo="$(git remote get-url origin | sed -E 's#(git@|https?://)[^/:]+[:/]#
         git log --pretty='- %s' -20
     fi
     echo
-    echo "Проверка загрузки:"
+    echo "Checking the download:"
     echo
     echo '```sh'
     echo "sha256sum -c SHA256SUMS"
@@ -239,12 +239,12 @@ origin_repo="$(git remote get-url origin | sed -E 's#(git@|https?://)[^/:]+[:/]#
     fi
     echo '```'
     echo
-    echo "Внутри: \`protonvpn-gui\`, \`.desktop\`, иконка, README и LICENSE. Сам CLI \`protonvpn\`"
-    echo "не входит — это зависимость системы."
+    echo "Inside: \`protonvpn-gui\`, the \`.desktop\` entry, the icon, README and LICENSE. The CLI"
+    echo "itself is not bundled — \`protonvpn\` is a dependency of the system."
     if [[ -n "$appimage_name" ]]; then
         echo
-        echo "Рядом \`$appimage_name\` — тот же бинарник, упакованный в AppImage: скачал,"
-        echo "\`chmod +x\` и запустил, без установки. CLI \`protonvpn\` всё равно нужен в системе."
+        echo "Beside it, \`$appimage_name\` is the same binary packed as an AppImage: download,"
+        echo "\`chmod +x\`, run — no installation. The \`protonvpn\` CLI is still needed on the system."
     fi
 } > "$notes_file"
 
@@ -258,12 +258,12 @@ token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 if [[ "$DRY_RUN" -eq 1 || -z "$token" ]]; then
     echo
     if [[ "$DRY_RUN" -eq 1 ]]; then
-        echo "== dry run: релиз не публикуется =="
+        echo "== dry run: nothing is published =="
     else
-        echo "== GH_TOKEN не задан: релиз собран, но не опубликован =="
+        echo "== no GH_TOKEN: the release is built but not published =="
     fi
-    echo "   тег был бы: $tag"
-    echo "   файлы:     ${assets[*]}"
+    echo "   the tag would be: $tag"
+    echo "   the files:        ${assets[*]}"
     exit 0
 fi
 
@@ -272,7 +272,7 @@ echo "== publish =="
 if gh release view "$tag" >/dev/null 2>&1; then
     # Re-running the same commit (a retried job, a second dispatch for the same main) must not
     # fail: upload over the existing assets instead of trying to create the release twice.
-    echo "   релиз $tag уже существует — перезаписываю артефакты"
+    echo "   release $tag already exists — overwriting the artifacts"
     gh release upload "$tag" "${assets[@]}" --clobber
 else
     gh release create "$tag" \
