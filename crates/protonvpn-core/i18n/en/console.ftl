@@ -8,8 +8,7 @@ console-transcript = Transcript
 
 # The button at the far right of the console bar that interrupts the command the runner is
 # executing. It is visible only while something runs, and it is the way out of a command waiting
-# for something that will never come. Short and destructive-looking; the pane beside it is the
-# CLI's own output and cannot be typed into.
+# for something that will never come. Short, and drawn in the danger colour.
 console-cancel = Cancel
 
 # The remark at the far right of the console bar when nothing is running, in place of the Cancel
