@@ -24,7 +24,7 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
             .width(Length::Fixed(470.0))
             .padding(Padding::from([26, 28]))
             .style(theme::card),
-        container(steps_card()).width(Length::FillPortion(1)),
+        container(steps_card(app)).width(Length::FillPortion(1)),
     ]
     .spacing(48)
     .align_y(Alignment::Start);
@@ -44,7 +44,7 @@ fn login_card(app: &App, two_factor: bool) -> Element<'_, Message> {
     // Only when the user opened this page themselves: if the CLI says nobody is signed in, there
     // is nothing to go back to.
     let back: Element<'_, Message> = if app.login_was_forced() {
-        button(text("Назад").size(12))
+        button(text(app.i18n.login_back()).size(12))
             .padding(Padding::from([4, 10]))
             .style(theme::ghost(theme::TEXT_MUTED, false))
             .on_press(Message::SignInCancelled)
@@ -76,7 +76,7 @@ fn login_card(app: &App, two_factor: bool) -> Element<'_, Message> {
         ..container::Style::default()
     });
 
-    let step = |number: &'static str, label: &'static str, active: bool| -> Element<'_, Message> {
+    let step = |number: &'static str, label: String, active: bool| -> Element<'_, Message> {
         row![
             text(number)
                 .size(12)
@@ -103,42 +103,42 @@ fn login_card(app: &App, two_factor: bool) -> Element<'_, Message> {
     };
 
     let steps = row![
-        step("1", "Аккаунт", !two_factor),
-        step("2", "Двухфакторный код", two_factor),
+        step("1", app.i18n.login_progress_account(), !two_factor),
+        step("2", app.i18n.login_progress_two_factor(), two_factor),
     ]
     .spacing(18);
 
     let form: Element<'_, Message> = if two_factor {
         column![
-            text("Код двухфакторной аутентификации").size(13),
+            text(app.i18n.login_two_factor_label()).size(13),
             row![
-                text_input("6 цифр", &app.login_two_factor)
-                    .secure(true)
-                    .on_input(Message::LoginTwoFactor)
-                    .on_submit(Message::LoginTwoFactorSubmit)
-                    .padding(Padding::from([10, 12]))
-                    .width(Length::Fill),
-                button(text("Подтвердить").size(13))
+                text_input(
+                    &app.i18n.login_two_factor_placeholder(),
+                    &app.login_two_factor
+                )
+                .secure(true)
+                .on_input(Message::LoginTwoFactor)
+                .on_submit(Message::LoginTwoFactorSubmit)
+                .padding(Padding::from([10, 12]))
+                .width(Length::Fill),
+                button(text(app.i18n.login_two_factor_submit()).size(13))
                     .padding(Padding::from([10, 16]))
                     .style(theme::filled(theme::ACCENT))
                     .on_press(Message::LoginTwoFactorSubmit),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            widgets::muted(
-                "CLI запросил код в PTY-сессии — он уходит прямо в процесс и не появляется ни в \
-                 аргументах, ни в консоли.",
-            ),
+            widgets::muted(app.i18n.login_two_factor_note()),
         ]
         .spacing(8)
         .into()
     } else {
         column![
-            text("Имя пользователя Proton").size(13),
-            text_input("user@proton.me", &app.login_username)
+            text(app.i18n.login_username_label()).size(13),
+            text_input(&app.i18n.login_username_placeholder(), &app.login_username)
                 .on_input(Message::LoginUsername)
                 .padding(Padding::from([10, 12])),
-            text("Пароль").size(13),
+            text(app.i18n.login_password_label()).size(13),
             row![
                 text_input("", &app.login_password)
                     .secure(!app.login_show_password)
@@ -148,9 +148,9 @@ fn login_card(app: &App, two_factor: bool) -> Element<'_, Message> {
                     .width(Length::Fill),
                 button(
                     text(if app.login_show_password {
-                        "Скрыть"
+                        app.i18n.login_password_hide()
                     } else {
-                        "Показать"
+                        app.i18n.login_password_show()
                     })
                     .size(12),
                 )
@@ -160,7 +160,7 @@ fn login_card(app: &App, two_factor: bool) -> Element<'_, Message> {
             ]
             .spacing(6)
             .align_y(Alignment::Center),
-            button(text("Продолжить").size(14))
+            button(text(app.i18n.login_submit()).size(14))
                 .padding(Padding::from([11, 18]))
                 .width(Length::Fill)
                 .style(theme::filled(theme::ACCENT))
@@ -179,46 +179,33 @@ fn login_card(app: &App, two_factor: bool) -> Element<'_, Message> {
             back,
         ]
         .align_y(Alignment::Center),
-        text("Вход в ProtonVPN").size(24),
-        widgets::muted(
-            "Обёртка выполняет protonvpn signin и передаёт пароль и код напрямую в PTY. Секреты \
-             не попадают в консоль.",
-        ),
+        text(app.i18n.login_title()).size(24),
+        widgets::muted(app.i18n.login_explainer()),
         widgets::separator(),
         steps,
         form,
-        widgets::faint(
-            "Ввод идёт в PTY · транскрипт ниже показывает только имена команд и вывод CLI."
-        ),
+        widgets::faint(app.i18n.login_pty_note()),
     ]
     .spacing(16)
     .into()
 }
 
-fn steps_card() -> Element<'static, Message> {
-    let items: [(&str, &str); 4] = [
-        ("1", "protonvpn signin запускается в PTY-сессии."),
-        (
-            "2",
-            "Пароль пишется в поток процесса, а не в аргументы командной строки.",
-        ),
-        (
-            "3",
-            "Если на аккаунте включён 2FA, CLI запрашивает код — поле появляется здесь же.",
-        ),
-        (
-            "4",
-            "В консоли остаются только имена команд и вывод CLI, без секретов.",
-        ),
+fn steps_card(app: &App) -> Element<'static, Message> {
+    // The digits are the list's own numbering, not a sentence: they are the same in every
+    // language, and only the sentences beside them are translated.
+    let items: [(&str, String); 4] = [
+        ("1", app.i18n.login_steps_1()),
+        ("2", app.i18n.login_steps_2()),
+        ("3", app.i18n.login_steps_3()),
+        ("4", app.i18n.login_steps_4()),
     ];
 
     column![
-        widgets::eyebrow("Что происходит во время входа"),
-        column(items.iter().map(|(number, value)| {
-            let number = number.to_string();
+        widgets::eyebrow(app.i18n.login_steps_title()),
+        column(items.into_iter().map(|(number, value)| {
             row![
                 widgets::monogram(number, Tone::Neutral),
-                text(value.to_string()).size(13).width(Length::Fill),
+                text(value).size(13).width(Length::Fill),
             ]
             .spacing(12)
             .align_y(Alignment::Center)
@@ -228,4 +215,35 @@ fn steps_card() -> Element<'static, Message> {
     ]
     .spacing(16)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use protonvpn_core::i18n::{I18n, Locale};
+
+    #[test]
+    fn the_sign_in_page_reads_in_the_source_language() {
+        let i18n = I18n::new(Locale::SOURCE);
+        assert_eq!(i18n.login_title(), "Sign in to Proton VPN");
+        assert_eq!(i18n.login_submit(), "Continue");
+        assert_eq!(i18n.login_two_factor_placeholder(), "6 digits");
+        assert_eq!(i18n.login_password_show(), "Show");
+        assert_eq!(i18n.login_password_hide(), "Hide");
+    }
+
+    #[test]
+    fn the_security_promise_says_where_the_secrets_go() {
+        let english = I18n::new(Locale::SOURCE);
+        let promise = english.login_explainer();
+        // The command name is data: it is the program that actually runs.
+        assert!(promise.contains("protonvpn signin"), "{promise}");
+        assert!(promise.contains("never reach the console"), "{promise}");
+
+        // A translation is a translation: the same facts, not the same sentence. The command name
+        // survives it either way, because it is not a word of ours.
+        let russian = I18n::new(Locale::from_id("ru").unwrap());
+        assert_ne!(russian.login_explainer(), english.login_explainer());
+        assert!(russian.login_explainer().contains("protonvpn signin"));
+        assert!(russian.login_pty_note().contains("PTY"));
+    }
 }
