@@ -16,6 +16,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use protonvpn_core::i18n::{I18n, Locale};
+
 /// Basename of the desktop entry, and of the installed icon. It is also the window's app id: a
 /// compositor matches one against the other, and that match is the whole point. It must never be
 /// `proton.vpn.app.gtk`, which is Proton's own name and would stop the CLI from running
@@ -89,7 +91,12 @@ impl Desktop {
     /// `Ok(Some(path))` means the entry is installed, `Ok(None)` that it was removed. Both files
     /// are left alone when their content already matches, so an ordinary start does not touch
     /// mtimes.
-    pub fn sync_entry(&self, enabled: bool, exec: &str) -> io::Result<Option<PathBuf>> {
+    pub fn sync_entry(
+        &self,
+        enabled: bool,
+        exec: &str,
+        i18n: &I18n,
+    ) -> io::Result<Option<PathBuf>> {
         let entry_path = self.entry_path();
         let icon_path = self.icon_path();
 
@@ -99,17 +106,25 @@ impl Desktop {
             return Ok(None);
         }
 
-        write_if_changed(&entry_path, entry(exec, &icon_path).as_bytes())?;
+        write_if_changed(&entry_path, entry(exec, &icon_path, i18n).as_bytes())?;
         write_if_changed(&icon_path, ICON)?;
         Ok(Some(entry_path))
     }
 
     /// Writes or removes the autostart entry: [`Desktop::sync_entry`]'s contract for the other
     /// file, which is the same entry plus the one key XDG autostart adds.
-    pub fn sync_autostart(&self, enabled: bool, exec: &str) -> io::Result<Option<PathBuf>> {
+    pub fn sync_autostart(
+        &self,
+        enabled: bool,
+        exec: &str,
+        i18n: &I18n,
+    ) -> io::Result<Option<PathBuf>> {
         let path = self.autostart_path();
         if enabled {
-            write_if_changed(&path, autostart_entry(exec, &self.icon_path()).as_bytes())?;
+            write_if_changed(
+                &path,
+                autostart_entry(exec, &self.icon_path(), i18n).as_bytes(),
+            )?;
             Ok(Some(path))
         } else {
             remove_if_present(&path)?;
@@ -139,32 +154,66 @@ impl Desktop {
 /// icons in the same directory resolved — they predate the cache; removing or rebuilding it made
 /// ours resolve too. GNOME Shell 50 drew the gear for exactly that reason. A path needs no theme,
 /// no cache and no cooperation, and every desktop accepts one.
-pub fn entry(exec: &str, icon: &Path) -> String {
+pub fn entry(exec: &str, icon: &Path, i18n: &I18n) -> String {
     format!(
         "\
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Proton VPN GUI
-GenericName=VPN client
-Comment=Console-first wrapper around the official protonvpn CLI
-Exec={}
-Icon={}
+{identity}Exec={exec}
+Icon={icon}
 Terminal=false
 Categories=Network;Security;
 Keywords=VPN;Proton;protonvpn;
 StartupNotify=false
 StartupWMClass={APP_ID}
 ",
-        exec_value(exec),
-        icon_value(icon)
+        identity = identity_keys(i18n),
+        exec = exec_value(exec),
+        icon = icon_value(icon),
     )
+}
+
+/// The three keys that name the application, in every language this build carries.
+///
+/// The freedesktop spec localizes a key by suffixing it with the language (`Name[ru]=…`), and a
+/// desktop picks the one matching its own locale — which is why every language is written at once
+/// rather than the selected one. This file belongs to the desktop, not to the running process: it
+/// is read when a menu is built, by a program that has never heard of our catalogue, and rewriting
+/// it on a language change would only move the problem to whoever is not looking.
+///
+/// The unsuffixed key is the fallback the spec names and the one a desktop with no matching
+/// translation reads, so it is always written. `build.rs` is what guarantees the suffixed ones are
+/// all there is to write.
+fn identity_keys(i18n: &I18n) -> String {
+    let mut out = String::new();
+    for (key, id, source) in [
+        ("Name", "desktop-name", i18n.desktop_name()),
+        (
+            "GenericName",
+            "desktop-generic-name",
+            i18n.desktop_generic_name(),
+        ),
+        ("Comment", "desktop-comment", i18n.desktop_comment()),
+    ] {
+        out.push_str(&format!("{key}={source}\n"));
+        for locale in Locale::ALL.iter().copied().filter(|l| *l != Locale::SOURCE) {
+            // Not the selected language's value: the suffix names the language, so the text has to
+            // be that language's.
+            let value = i18n.localized(locale, id).unwrap_or_else(|| source.clone());
+            out.push_str(&format!("{key}[{}]={value}\n", locale.id()));
+        }
+    }
+    out
 }
 
 /// The autostart entry. XDG autostart is the same file with one extra key — nothing in it depends
 /// on what autostart adds, so this stays one template instead of two that drift apart.
-pub fn autostart_entry(exec: &str, icon: &Path) -> String {
-    format!("{}X-GNOME-Autostart-enabled=true\n", entry(exec, icon))
+pub fn autostart_entry(exec: &str, icon: &Path, i18n: &I18n) -> String {
+    format!(
+        "{}X-GNOME-Autostart-enabled=true\n",
+        entry(exec, icon, i18n)
+    )
 }
 
 /// The running program, as a `.desktop` file has to spell it.
@@ -263,6 +312,13 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// The source language, which is what these tests assert on. `entry` writes a key per
+    /// language, so the rest of the catalogue is exercised by
+    /// `the_packaged_entry_says_the_same_thing_as_the_generated_one`.
+    fn i18n() -> I18n {
+        I18n::new(Locale::SOURCE)
+    }
+
     /// A `Desktop` over a directory of its own, the way the config tests make a `ConfigStore`.
     fn temp_desktop(name: &str) -> Desktop {
         let dir =
@@ -274,7 +330,7 @@ mod tests {
     #[test]
     fn the_entry_is_an_application_entry_with_our_own_app_id() {
         let icon = Path::new("/home/u/.local/share/icons/hicolor/256x256/apps/protonvpn-gui.png");
-        let entry = entry("/usr/bin/protonvpn-gui", icon);
+        let entry = entry("/usr/bin/protonvpn-gui", icon, &i18n());
         assert!(entry.starts_with("[Desktop Entry]"));
         assert!(entry.contains("Type=Application"));
         assert!(entry.contains("Exec=/usr/bin/protonvpn-gui"));
@@ -295,13 +351,40 @@ mod tests {
     #[test]
     fn the_autostart_entry_is_the_same_entry_plus_the_autostart_key() {
         let icon = Path::new("/home/u/.local/share/icons/hicolor/256x256/apps/protonvpn-gui.png");
-        let autostart = autostart_entry("/usr/bin/protonvpn-gui", icon);
+        let autostart = autostart_entry("/usr/bin/protonvpn-gui", icon, &i18n());
         assert!(autostart.contains("X-GNOME-Autostart-enabled=true"));
         // One template: dropping the extra key has to leave exactly the application entry.
         assert_eq!(
             autostart.replace("X-GNOME-Autostart-enabled=true\n", ""),
-            self::entry("/usr/bin/protonvpn-gui", icon)
+            self::entry("/usr/bin/protonvpn-gui", icon, &i18n())
         );
+    }
+
+    #[test]
+    fn every_language_is_written_into_the_entry() {
+        // The file is read by a desktop that has never heard of our catalogue, so it is written
+        // with one key per language and the desktop picks the one its own locale matches. The
+        // unsuffixed key is the fallback, and English is what it holds.
+        let icon = Path::new("/home/u/.local/share/icons/hicolor/256x256/apps/protonvpn-gui.png");
+        let entry = entry("/usr/bin/protonvpn-gui", icon, &i18n());
+
+        assert!(entry.contains("Name=Proton VPN GUI\n"));
+        assert!(entry.contains("GenericName=VPN client\n"));
+        assert!(
+            entry.contains("Comment=Console-first wrapper around the official protonvpn CLI\n")
+        );
+
+        for locale in Locale::ALL.iter().copied().filter(|l| *l != Locale::SOURCE) {
+            let theirs = I18n::new(locale);
+            for (key, value) in [
+                ("Name", theirs.desktop_name()),
+                ("GenericName", theirs.desktop_generic_name()),
+                ("Comment", theirs.desktop_comment()),
+            ] {
+                let line = format!("{key}[{}]={value}\n", locale.id());
+                assert!(entry.contains(&line), "{line} is missing from:\n{entry}");
+            }
+        }
     }
 
     #[test]
@@ -317,6 +400,7 @@ mod tests {
         let generated = entry(
             "protonvpn-gui",
             Path::new("/home/u/.local/share/icons/hicolor/256x256/apps/protonvpn-gui.png"),
+            &i18n(),
         );
 
         fn fields(text: &str) -> Vec<(String, String)> {
@@ -364,7 +448,7 @@ mod tests {
         // come between them.
         let desktop = temp_desktop("entry-icon");
         desktop
-            .sync_entry(true, "/opt/Proton VPN.AppImage")
+            .sync_entry(true, "/opt/Proton VPN.AppImage", &i18n())
             .unwrap();
 
         let icon = desktop.icon_path();
@@ -411,7 +495,7 @@ mod tests {
         let desktop = temp_desktop("entry");
 
         let installed = desktop
-            .sync_entry(true, "/opt/Proton VPN.AppImage")
+            .sync_entry(true, "/opt/Proton VPN.AppImage", &i18n())
             .unwrap();
         assert_eq!(installed.as_deref(), Some(desktop.entry_path().as_path()));
         let written = fs::read_to_string(desktop.entry_path()).unwrap();
@@ -425,7 +509,7 @@ mod tests {
             .modified()
             .unwrap();
         desktop
-            .sync_entry(true, "/opt/Proton VPN.AppImage")
+            .sync_entry(true, "/opt/Proton VPN.AppImage", &i18n())
             .unwrap();
         let after = fs::metadata(desktop.entry_path())
             .unwrap()
@@ -435,7 +519,7 @@ mod tests {
 
         assert_eq!(
             desktop
-                .sync_entry(false, "/opt/Proton VPN.AppImage")
+                .sync_entry(false, "/opt/Proton VPN.AppImage", &i18n())
                 .unwrap(),
             None
         );
@@ -443,7 +527,7 @@ mod tests {
         assert!(!desktop.icon_path().exists());
         assert!(!desktop.entry_installed());
         // Removing what is not there is not an error: the user may have deleted it already.
-        assert_eq!(desktop.sync_entry(false, "x").unwrap(), None);
+        assert_eq!(desktop.sync_entry(false, "x", &i18n()).unwrap(), None);
 
         let _ = fs::remove_dir_all(desktop.entry_path().parent().unwrap().parent().unwrap());
     }
@@ -453,7 +537,7 @@ mod tests {
         let desktop = temp_desktop("autostart");
 
         desktop
-            .sync_autostart(true, "/usr/bin/protonvpn-gui")
+            .sync_autostart(true, "/usr/bin/protonvpn-gui", &i18n())
             .unwrap();
         assert!(desktop.autostart_enabled());
         assert!(
@@ -463,10 +547,10 @@ mod tests {
         );
 
         desktop
-            .sync_autostart(false, "/usr/bin/protonvpn-gui")
+            .sync_autostart(false, "/usr/bin/protonvpn-gui", &i18n())
             .unwrap();
         assert!(!desktop.autostart_enabled());
-        assert_eq!(desktop.sync_autostart(false, "x").unwrap(), None);
+        assert_eq!(desktop.sync_autostart(false, "x", &i18n()).unwrap(), None);
 
         let _ = fs::remove_dir_all(desktop.autostart_path().parent().unwrap().parent().unwrap());
     }

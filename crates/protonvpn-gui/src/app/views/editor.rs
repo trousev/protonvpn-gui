@@ -54,7 +54,7 @@ pub(crate) fn view<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a
                 EditorFlag::PortForwarding => editor.port_forwarding,
             };
             checkbox(checked)
-                .label(flag.label())
+                .label(flag.label(&app.i18n))
                 .text_size(13)
                 .on_toggle(move |value| Message::EditorFlag(*flag, value))
                 .into()

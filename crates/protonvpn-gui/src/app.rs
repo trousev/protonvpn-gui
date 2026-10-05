@@ -86,7 +86,7 @@ fn boot() -> (App, Task<Message>) {
     // a `FluentBundle` is `Send` but not `Sync`, so a thread owns one instead of sharing one
     // behind a lock.
     let i18n = I18n::new(locale);
-    let autostart_note = match desktop.sync_autostart(config.autostart, &exec) {
+    let autostart_note = match desktop.sync_autostart(config.autostart, &exec, &i18n) {
         Ok(_) => None,
         Err(error) => Some(i18n.chrome_notice_autostart_failed(error.to_string())),
     };
@@ -94,7 +94,7 @@ fn boot() -> (App, Task<Message>) {
     // The application entry, and the same rule: the config decides, every start re-asserts it.
     // This is the file that gives the window its name and icon (§12) — without it a Wayland
     // compositor has nothing to match the window against.
-    let entry_note = match desktop.sync_entry(config.desktop_entry, &exec) {
+    let entry_note = match desktop.sync_entry(config.desktop_entry, &exec, &i18n) {
         Ok(_) => None,
         Err(error) => Some(i18n.chrome_notice_entry_failed(error.to_string())),
     };
@@ -1216,7 +1216,10 @@ impl App {
             AppToggle::Autostart => {
                 let mut config = self.config.clone();
                 config.autostart = value;
-                match self.desktop.sync_autostart(value, &desktop::current_exec()) {
+                match self
+                    .desktop
+                    .sync_autostart(value, &desktop::current_exec(), &self.i18n)
+                {
                     Ok(_) => self.save_config(config),
                     Err(error) => {
                         self.notice =
@@ -1227,7 +1230,10 @@ impl App {
             AppToggle::DesktopEntry => {
                 let mut config = self.config.clone();
                 config.desktop_entry = value;
-                match self.desktop.sync_entry(value, &desktop::current_exec()) {
+                match self
+                    .desktop
+                    .sync_entry(value, &desktop::current_exec(), &self.i18n)
+                {
                     Ok(_) => self.save_config(config),
                     Err(error) => {
                         self.notice = Some(self.i18n.chrome_notice_entry_failed(error.to_string()))

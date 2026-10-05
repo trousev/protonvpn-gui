@@ -73,28 +73,27 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
     .align_y(Alignment::Center)
     .width(Length::Fill);
 
-    let tabs =
-        row(SettingsTab::ALL
-            .iter()
-            .map(|tab| {
-                let active = *tab == app.settings_tab;
-                button(text(tab.label()).size(13).style(move |_: &Theme| {
-                    iced::widget::text::Style {
-                        color: Some(if active {
-                            theme::ACCENT
-                        } else {
-                            theme::TEXT_MUTED
-                        }),
-                    }
-                }))
-                .padding(Padding::from([6, 2]))
-                .style(theme::bare())
-                .on_press(Message::SettingsTabSelected(*tab))
-                .into()
-            })
-            .collect::<Vec<Element<'_, Message>>>())
-        .spacing(22)
-        .align_y(Alignment::Center);
+    let tabs = row(SettingsTab::ALL
+        .iter()
+        .map(|tab| {
+            let active = *tab == app.settings_tab;
+            button(text(tab.label(&app.i18n)).size(13).style(move |_: &Theme| {
+                iced::widget::text::Style {
+                    color: Some(if active {
+                        theme::ACCENT
+                    } else {
+                        theme::TEXT_MUTED
+                    }),
+                }
+            }))
+            .padding(Padding::from([6, 2]))
+            .style(theme::bare())
+            .on_press(Message::SettingsTabSelected(*tab))
+            .into()
+        })
+        .collect::<Vec<Element<'_, Message>>>())
+    .spacing(22)
+    .align_y(Alignment::Center);
 
     let mut content = column![].spacing(14);
     if !cli_keys(app.settings_tab).is_empty() {

@@ -40,6 +40,7 @@ const RESERVED: &[&str] = &[
     "bundle",
     "format",
     "lookup",
+    "localized",
     "endonym",
     "detect",
     "app_name",
@@ -785,19 +786,35 @@ fn generate(
     }
     messages_rs.push_str("}\n");
 
-    // The ids, for the tests that have to look at all of them at once.
+    // Every message, called. Generated for the same reason the accessors are: the check is about
+    // the whole catalogue at once, and hand-writing three hundred calls to it would be a second
+    // catalogue, kept in step by hand.
     messages_rs.push_str(
-        "\n/// Every message id in the catalogue.\n\
-         #[allow(dead_code)]\n\
-         pub(crate) struct MessageIds;\n\n\
-         #[allow(dead_code)]\n\
-         impl MessageIds {\n    \
-         pub(crate) const ALL: &'static [&'static str] = &[\n",
+        "\n#[cfg(test)]\n\
+         impl I18n {\n    \
+         /// Every message, called with a placeholder for each of its own arguments.\n    \
+         ///\n    \
+         /// A locale can be complete and still not *format*: a broken placeable, a plural\n    \
+         /// selection the translation reordered into nonsense, a `NUMBER()` on a string. Fluent\n    \
+         /// hands back the message id rather than an error, so the only way to see it is to call\n    \
+         /// every one of them. See `tests::no_message_falls_back_to_its_id`.\n    \
+         pub(crate) fn every_message(&self) -> Vec<(&'static str, String)> {\n        \
+         vec![\n",
     );
-    for id in source.keys() {
-        writeln!(messages_rs, "        \"{id}\",").ok();
+    for (id, message) in source {
+        write!(messages_rs, "            (\"{id}\", self.{}(", method_name(id)).ok();
+        for (position, variable) in message.variables.iter().enumerate() {
+            if position > 0 {
+                messages_rs.push_str(", ");
+            }
+            match variable.kind {
+                Kind::Text => messages_rs.push_str("\"x\""),
+                Kind::Number => messages_rs.push('1'),
+            }
+        }
+        messages_rs.push_str(")),\n");
     }
-    messages_rs.push_str("    ];\n}\n");
+    messages_rs.push_str("        ]\n    }\n}\n");
 
     fs::write(out_dir.join("messages.rs"), &messages_rs).map_err(|error| error.to_string())?;
     Ok(())

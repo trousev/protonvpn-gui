@@ -259,6 +259,23 @@ readable and copyable.
 > the attestation command that does. Sanctioned exception #4
 > ([`architecture.md`](architecture.md) §0, §14).
 
+### Phase 3.75 — Localization — **done**
+
+> The application had exactly one language, and it was not the one in the source: every sentence
+> was a Russian literal in a Rust file, so a second language would have been a fork. Now English is
+> the source, the words live in a Project Fluent catalogue
+> (`crates/protonvpn-core/i18n/`, one directory per language), and `build.rs` **refuses to compile
+> a locale that is short a message, a file or a `$variable`** — not a warning, not a runtime
+> fallback, which is the failure that goes unnoticed for a year. Each message carries a developer
+> comment saying where it appears and how much room it has; that comment is why Fluent was chosen
+> over a table of constants. `scripts/translate` fills the gaps with an LLM, sends only what is
+> missing, and finishes by running the real check, so a translation is evidence rather than a
+> claim. The language follows the desktop (`$LANGUAGE`, `$LC_ALL`, `$LC_MESSAGES`, `$LANG`) and can
+> be pinned in Settings → General, where every option is written in the language it names — the
+> only way out for someone who has landed in a language they cannot read. Our words are translated;
+> the CLI's bytes are not, which is §0 applied to text
+> ([`architecture.md`](architecture.md) §15, [`i18n.md`](i18n.md)).
+
 ### Phase 3 (original notes)
 
 **AppImage only. Flatpak is dropped deliberately** — the sandbox would fight both the host

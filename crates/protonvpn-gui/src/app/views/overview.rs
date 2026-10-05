@@ -277,9 +277,9 @@ fn selected(app: &App, id: &str) -> bool {
 fn preset_row(app: &App, preset: SystemPreset) -> Element<'_, Message> {
     let is_selected = selected(app, preset.id());
     let badges: Element<'_, Message> = row(preset
-        .badges()
-        .iter()
-        .map(|badge| widgets::badge(*badge, Tone::Neutral))
+        .badges(&app.i18n)
+        .into_iter()
+        .map(|badge| widgets::badge(badge, Tone::Neutral))
         .collect::<Vec<_>>())
     .spacing(4)
     .into();
@@ -287,8 +287,8 @@ fn preset_row(app: &App, preset: SystemPreset) -> Element<'_, Message> {
     let body = row![
         widgets::monogram(preset.monogram(), Tone::Accent),
         column![
-            text(preset.name()).size(14),
-            widgets::muted(preset.summary()),
+            text(preset.name(&app.i18n)).size(14),
+            widgets::muted(preset.summary(&app.i18n)),
         ]
         .spacing(1)
         .width(Length::Fill),

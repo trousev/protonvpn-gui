@@ -75,6 +75,16 @@ impl I18n {
         self.chrome_app_name()
     }
 
+    /// A message in another language, for a file somebody else reads.
+    ///
+    /// A `.desktop` entry carries one key per language — `Name[ru]=…` — and those keys have to be
+    /// written when the *file* is written, not when a widget is drawn. This is the one place that
+    /// needs a bundle other than the selected one and a message with no arguments; everything a
+    /// screen shows goes through a generated accessor instead.
+    pub fn localized(&self, locale: Locale, id: &str) -> Option<String> {
+        self.lookup(&[locale], id, &[])
+    }
+
     /// A language's name for itself, formatted in that language rather than in the current one.
     pub fn endonym(&self, locale: Locale) -> String {
         self.lookup(&[locale], "chrome-locale-name", &[])
@@ -256,15 +266,33 @@ mod tests {
         I18n::new(Locale::SOURCE)
     }
 
+    /// Every message, in every language, actually formatted.
+    ///
+    /// The build already refuses a locale that is short a message, so what this catches is the
+    /// other half: a message that is *present* and does not format. Fluent answers that with the
+    /// message id rather than an error, which on screen is a label reading `settings-language-hint`
+    /// — and no other test in this crate would notice.
     #[test]
-    fn every_locale_carries_every_message() {
+    fn no_message_falls_back_to_its_id() {
         for locale in Locale::ALL {
             let i18n = I18n::new(*locale);
-            let bundle = &i18n.bundles[locale.index()];
-            for id in MessageIds::ALL {
+            let messages = i18n.every_message();
+            assert!(
+                messages.len() > 100,
+                "i18n/{}: only {} messages were generated",
+                locale.id(),
+                messages.len()
+            );
+            for (id, text) in messages {
                 assert!(
-                    bundle.get_message(id).is_some(),
-                    "i18n/{}: `{id}` is missing",
+                    !text.is_empty(),
+                    "i18n/{}: `{id}` formatted to nothing",
+                    locale.id()
+                );
+                assert_ne!(text, id, "i18n/{}: `{id}` fell back to its id", locale.id());
+                assert!(
+                    !text.contains("{ $") && !text.contains("{ NUMBER"),
+                    "i18n/{}: `{id}` left a placeable unresolved: {text}",
                     locale.id()
                 );
             }

@@ -40,9 +40,9 @@ the AppImage calls it from `PATH` like the installed binary does.
 On the first start the app writes its own menu entry — `~/.local/share/applications/protonvpn-gui.desktop`
 — and its icon into the hicolor theme. That is not decoration: Wayland has no window icons at all,
 and a desktop learns a window's name and icon only from a `.desktop` file whose name matches the
-window's app id. Without it GNOME shows the window as «Неизвестное приложение» under a generic
-gear. It is a setting (`Ярлык в меню приложений`, on by default), and turning it off removes both
-files.
+window's app id. Without it GNOME shows the window as an unknown application under a generic
+gear. It is a setting (`Entry in the application menu`, on by default), and turning it off removes
+both files.
 
 Downloads can be verified rather than trusted — `SHA256SUMS` covers both assets:
 
@@ -99,7 +99,7 @@ standing hole in the rule above — the port is displayed and copyable instead.
 
 ## The SOCKS5 door
 
-The paranoid case, off by default in **Настройки → Прокси**: an application that must never reach
+The paranoid case, off by default in **Settings → Proxy**: an application that must never reach
 the network without the VPN gets pointed at `127.0.0.1:1080` in its own settings, and this
 application makes sure that door is either open onto the tunnel or shut.
 
@@ -115,14 +115,14 @@ application makes sure that door is either open onto the tunnel or shut.
 - **Every 30 seconds** (configurable, `0` turns it off) the same `curl` egress check the Overview
   page uses confirms that traffic is really going somewhere else. If the egress address is the
   pre-connection one again, the door shuts, whatever `protonvpn` says. This one needs the egress
-  probe itself to be on (Настройки → Опрос); with it off, only the local route check remains.
+  probe itself to be on (Settings → Polling); with it off, only the local route check remains.
 
 Two things to know before turning it on, both deliberate:
 
 - **It arms on evidence.** The gate opens only when the kernel's route differs from a route
   observed while the CLI said the tunnel was down. If you enable the proxy while the VPN is
   already connected, the app has never seen the other route, so the proxy stays shut and says so
-  — reconnect once (Отключить, then Подключиться) and it arms. The same holds after the door shuts
+  — reconnect once (Disconnect, then Connect) and it arms. The same holds after the door shuts
   itself: a gate closed on suspicion never reopens on a different route alone.
 - **It is IPv4, `CONNECT` and loopback only, with no authentication.** An IPv6 literal is refused
   rather than guessed at; there is no `BIND` or `UDP ASSOCIATE`; and the listener cannot leave the
@@ -174,14 +174,14 @@ have to be replaced is the one currently running. So the application does it, wi
   and **renamed** over the running one; it is never executed by the update;
 - the previous image stays as `<name>.old` for exactly one start, then goes.
 
-Four policies, in Настройки → Общие → Обновления, and `скачивать` is the default:
+Four policies, in **Settings → General → Application · Updates**, and `download` is the default:
 
 | Policy | What happens without being asked |
 |---|---|
-| `не проверять` | nothing; the release page is only contacted if you press the button |
-| `только сообщать` | the latest release is reported, nothing is downloaded |
-| `скачивать` | the image is downloaded and verified, and waits next to the running one |
-| `скачивать и ставить` | …and renamed into place; it takes effect at the next start |
+| `do not check` | nothing; the release page is only contacted if you press the button |
+| `notify only` | the latest release is reported, nothing is downloaded |
+| `download` | the image is downloaded and verified, and waits next to the running one |
+| `download and install` | …and renamed into place; it takes effect at the next start |
 
 Every step stays available as a button whatever the policy says. The check runs a few seconds after
 start and then at most once a day (`last_check` is remembered in the config, so restarting the
@@ -225,17 +225,50 @@ The application entry and its icon live in `~/.local/share/{applications,icons/h
 kept in step with the setting described above; [`docs/architecture.md`](docs/architecture.md) §12
 is the contract for all three files.
 
+## Language
+
+The interface is English and Russian, and it follows the desktop unless you pick one in
+**Settings → General**. English is the *source* language: every sentence the application says to a
+person is a message in `crates/protonvpn-core/i18n/en/`, and `ru/` beside it is a translation of
+exactly that set.
+
+The catalogue is [Project Fluent](https://projectfluent.org/), and it is checked **before the
+crate compiles**: a language that is missing a message, a file or a `$variable` does not build.
+That is deliberate. A fallback to English at run time is the kind of gap that goes unnoticed for a
+year, so it is a compile error instead — which also means an untranslated string can never
+disappear into a release.
+
+Adding a language is adding a directory:
+
+```sh
+mkdir crates/protonvpn-core/i18n/de
+./scripts/translate     # reads $OPENAI_API_KEY, fills in what is missing
+```
+
+`scripts/translate` sends only the messages a language is actually missing, along with the
+developer comment above each one — where it appears and how much room it has — and finishes by
+running the real check. `./scripts/translate --check` reports gaps without calling anything.
+
+What is **not** translated is data: a server name, a country, a city, an exit code, the command
+line, the CLI's own output. The console shows those exactly as they arrived, which is the whole
+reason it is worth reading. [`docs/i18n.md`](docs/i18n.md) is the full contract.
+
 ## Contributing
 
 `main` is protected. Every change goes through a pull request and cannot be merged until CI is
-green — the same four gates you can run yourself:
+green — the same gates you can run yourself:
 
 ```sh
 cargo fmt --all --check
 ./scripts/check-linux-deps.sh
+./scripts/translate --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
+
+**Before you open a pull request, run `./scripts/translate`** if you touched a string: it fills in
+the translations a new or changed message needs, and it fails loudly rather than leaving a language
+half-done.
 
 No review is required, and no direct pushes are possible, including for the maintainer: if CI is
 red, `main` cannot move. See [`SECURITY.md`](SECURITY.md) for the workflow hardening this repository
@@ -317,7 +350,10 @@ crates/protonvpn-core/     all VPN logic, no UI dependency (the tray must work h
   socks5.rs                the local SOCKS5 proxy (exception #3)
   net/route.rs             the kernel's routing answer the proxy's gate reads
   engine.rs                the one thread that owns state
+  i18n/                    every word the app says: one directory per language, English first
+  build.rs                 compiles the catalogue; an incomplete translation does not build
 crates/protonvpn-gui/      views only: window, console pane, tray, the .desktop entries
+scripts/translate          fills in missing translations with an LLM; run it before a pull request
 ```
 
 The design contract is [`docs/architecture.md`](docs/architecture.md); it wins over everything
