@@ -31,6 +31,11 @@
 # than the previous one, and there is nothing to bump — a release that waits for three merges
 # simply skips the numbers in between.
 #
+# The formula itself lives in `scripts/version.sh`, which is also what bakes that number into the
+# binary (`packaging/appimage/build.sh`). The tag published here and the version the app reports
+# about itself are therefore the same string, and the check below refuses an AppImage where they
+# disagree.
+#
 # The AppImage is an input, not something this script builds. It is produced by
 # `packaging/appimage/build.sh` in a job that cannot write to the repository and passed here, so
 # the one job allowed to publish never runs the third-party toolchain. A local release is:
@@ -84,13 +89,22 @@ release_tags() {
 }
 
 # Computed for `--print-version` and for a local release. A dispatch does not use it: the version
-# there belongs to the runner, which is looking at `main` and not at this checkout.
-latest="$(release_tags | tail -1)"
-base="${latest:-0.1}"
-base="$(echo "$base" | cut -d. -f1,2)"
-
-count="$(git rev-list --count HEAD)"
-tag="$base.$count"
+# there belongs to the runner, which is looking at `main` and not at this checkout. That is also why
+# this is only asked for when it is actually needed — a dispatch from a shallow clone is a perfectly
+# good dispatch, and it must not fail on a question it was never going to answer.
+tag=""
+base=""
+latest=""
+count=""
+if [[ "$PRINT_VERSION" -eq 1 || "$LOCAL" -eq 1 ]]; then
+    # One definition of the number, shared with `packaging/appimage/build.sh`: the tag published
+    # here and the version baked into the binary have to be the same string, or the app in the
+    # user's hands spends the life of that release offering an update to itself.
+    tag="$("$REPO_ROOT/scripts/version.sh")"
+    base="$("$REPO_ROOT/scripts/version.sh" --base)"
+    latest="$("$REPO_ROOT/scripts/version.sh" --latest)"
+    count="$("$REPO_ROOT/scripts/version.sh" --count)"
+fi
 
 if [[ "$PRINT_VERSION" -eq 1 ]]; then
     echo "$tag"
@@ -173,6 +187,19 @@ if [[ -n "$APPIMAGE" ]]; then
         exit 1
     fi
     appimage_name="$(basename "$APPIMAGE")"
+    # The image names itself after the version baked into it, so its name is a claim about its
+    # bytes, and the claim has to be this release's version. The running app compares that number
+    # against `releases/latest`: an image that believes it is 0.1.42 while being published as 0.1.43
+    # would offer an update to itself forever, and never apply one.
+    case "$appimage_name" in
+        *-"$tag"-*) ;;
+        *)
+            echo "error: the AppImage's name does not carry this release's version ($tag):" >&2
+            echo "       $appimage_name" >&2
+            echo "       rebuild it with packaging/appimage/build.sh from this commit." >&2
+            exit 1
+            ;;
+    esac
     install -m 755 "$APPIMAGE" "dist/$appimage_name"
 fi
 

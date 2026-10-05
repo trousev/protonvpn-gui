@@ -44,6 +44,10 @@ jobs:
         with:
           # No token left behind in .git/config for a later step to find and reuse.
           persist-credentials: false
+          # The version baked into the binary is derived from the tags and the commit count
+          # (`scripts/version.sh`), so this job needs the same full history the publish job does —
+          # and both jobs of one run see the same commit, so they cannot disagree about it.
+          fetch-depth: 0
 
       - name: Toolchain
         run: |

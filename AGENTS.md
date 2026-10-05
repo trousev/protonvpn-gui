@@ -24,11 +24,12 @@ comes from `protonvpn status`, never from inspecting the system.
 The temptation to "just read NetworkManager, it's easier" will be strong, and it is the single
 most likely way to destroy this design. Do not.
 
-Exactly three exceptions are sanctioned and bounded —
+Exactly four exceptions are sanctioned and bounded —
 [`docs/architecture.md`](docs/architecture.md) §0 has the table: a `curl` ground-truth probe,
-NAT-PMP for the port-forwarding lease, and a loopback-only SOCKS5 proxy that refuses to relay
-unless the tunnel can be shown to carry traffic (§13). Do not add a fourth without a human
-decision.
+NAT-PMP for the port-forwarding lease, a loopback-only SOCKS5 proxy that refuses to relay unless
+the tunnel can be shown to carry traffic (§13), and a `curl` to **this project's own release page**
+for the AppImage updater, which verifies what it downloads and never executes it (§14). Do not add
+a fifth without a human decision.
 
 ## Where things are
 
@@ -44,12 +45,18 @@ decision.
 | `crates/protonvpn-core/src/engine.rs` | the one thread that owns state; the only writer of the log bus, the interpreter state, the lease and the proxy's gate |
 | `crates/protonvpn-core/src/socks5.rs` | the local SOCKS5 proxy (exception #3): the protocol, the listener, the counters |
 | `crates/protonvpn-core/src/net/route.rs` | the kernel's source-address answer the proxy's gate is built on — a connected UDP socket that is never written to |
+| `crates/protonvpn-core/src/update.rs` | the AppImage updater (exception #4): the check, the checksum, the swap |
+| `scripts/version.sh` | the one definition of `X.Y.N` — published as a tag and baked into the binary |
 | `packaging/` | AppImage build script, `.desktop`, icon |
 
 ## Commands
 
 ```sh
 cargo test                                  # unit tests + fixture-corpus guarantees
+cargo test -p protonvpn-core --test live_update -- --ignored --nocapture
+                                            # the updater against the real release page (~5 MB);
+                                            # ignored on purpose: `cargo test` never reaches the
+                                            # network, and CI never sees it
 cargo fmt --all                             # formatting is enforced
 cargo clippy --all-targets -- -D warnings   # warnings are errors
 ./scripts/check-linux-deps.sh               # Linux-only graph, and a ratcheted crate count
@@ -149,6 +156,11 @@ can only be checked by a real run.
   (`docs/architecture.md` §13): a proxy that cannot show it is protecting you must not claim it is.
 - **State must be shown with its age** (`updated 3 mins ago`), never as a bare verdict and never
   with the word "stale". See `docs/architecture.md` §7.
+- **The AppImage's file name is a contract.** `ProtonVPN-GUI-<version>-<arch>.AppImage` is how the
+  updater learns the version — it reads it back out of `SHA256SUMS`, and there is no GitHub API in
+  the picture. Rename the asset in `packaging/appimage/build.sh` and the updater stops finding
+  releases; `scripts/release.sh` refuses to publish an image whose name disagrees with the version
+  baked into it.
 - **winit cannot hide a window on Wayland** — `set_visible` is literally "Not possible on
   Wayland". "Close to tray" is therefore destroy-and-recreate, and the app must be an
   `iced::daemon`: an `iced::application` exits the moment its last window is destroyed, which
@@ -209,10 +221,33 @@ kernel was seen to change, whose watchdog re-reads that route every 200 ms witho
 whose `net/route.rs` needs no NetworkManager, no D-Bus and no Proton file to answer the only
 question it asks.
 
+Then the AppImage updater (exception #4, [`docs/architecture.md`](docs/architecture.md) §14):
+`scripts/version.sh` is the one definition of `X.Y.N`, baked into the binary by
+`crates/protonvpn-gui/build.rs` and printed by `--version`; `crates/protonvpn-core/src/update.rs`
+reads the latest release out of `releases/latest/download/SHA256SUMS` (no API, no rate limit, the
+version inside the asset's own name), checks the bytes against the checksum published with them and
+against the type-2 AppImage marker, and swaps the image in place with a hard link and an atomic
+rename — the previous one stays as `<name>.old` until the next start proves the new one works. The
+check and the download run off the engine's thread and off the runner's queue, four policies govern
+what happens without being asked (`скачивать` by default), and **nothing downloaded is ever
+executed**: the new image takes effect at the next start. What the checksum does not prove —
+authorship — is written down in `SECURITY.md` rather than implied.
+
 **Next:** a live `signin` run with real credentials (needs a human — the password prompt is
 captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; a live
 SOCKS5 round trip with a real application on the other end of the listener; desktop
 notifications, which need a human decision because they would be a new sanctioned exception.
+
+**Verified live** (2026-10-05, the updater): the release page answers and the answer is parsed into
+a release or a finding with a reason; a real 4.9 MB asset is downloaded through the redirect to
+`objects.githubusercontent.com`, its size survives that redirect, it hashes to the checksum the
+release published (checked again with `sha256sum`), it passes the type-2 check, and it is swapped
+in place with the previous image kept as `.old` and removed at the next start. Replacing the file
+under a **running** AppImage is invisible to it — the FUSE mount keeps serving the old bytes, the
+window redraws the same frame, and a fresh start runs the new image. Run headless with a sandboxed
+`$HOME`, the application itself performed its scheduled check and wrote `last_check` into its
+config. The repeatable version of all of that is
+`cargo test -p protonvpn-core --test live_update -- --ignored`.
 
 **Verified live** (2026-09-30, two full rounds): the app connects on start to the configured
 country and the tray reports it, `protonvpn status` agrees, the egress address changes and comes

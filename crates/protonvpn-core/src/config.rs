@@ -79,6 +79,8 @@ pub struct Config {
     /// proven: it is an option for applications that must never touch the network without the VPN,
     /// not a service the application starts on everyone's behalf.
     pub socks5: Socks5,
+    /// Auto-update for AppImage installs — sanctioned exception #4 (`docs/architecture.md` §14).
+    pub update: Update,
 }
 
 /// The selection used when the file does not mention one.
@@ -102,6 +104,7 @@ impl Default for Config {
             connections: Vec::new(),
             selected_connection: default_selected_connection(),
             socks5: Socks5::default(),
+            update: Update::default(),
         }
     }
 }
@@ -129,6 +132,7 @@ struct Wire {
     #[serde(default = "default_selected_connection")]
     selected_connection: Option<String>,
     socks5: Socks5,
+    update: Update,
 }
 
 impl From<Wire> for Config {
@@ -142,6 +146,7 @@ impl From<Wire> for Config {
             connections: wire.connections,
             selected_connection: wire.selected_connection,
             socks5: wire.socks5,
+            update: wire.update,
         }
     }
 }
@@ -157,6 +162,7 @@ impl From<&Config> for Wire {
             connections: config.connections.clone(),
             selected_connection: config.selected_connection.clone(),
             socks5: config.socks5.clone(),
+            update: config.update.clone(),
         }
     }
 }
@@ -336,6 +342,53 @@ impl Default for Socks5 {
     }
 }
 
+/// Auto-update for AppImage installs — sanctioned exception #4 (`docs/architecture.md` §14).
+///
+/// Three settings and no hidden ones: what the application may do on its own, when it last looked,
+/// and which version the user asked not to be told about again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Update {
+    pub policy: UpdatePolicy,
+    /// When the release page was last asked successfully, in seconds since the Unix epoch. In the
+    /// file and not in memory: a restart must not mean a fresh check every time the app is opened.
+    pub last_check: Option<u64>,
+    /// The version the user asked not to be told about again. A later release is offered again —
+    /// this is "not this one", not "never".
+    pub dismissed: Option<String>,
+}
+
+impl Default for Update {
+    fn default() -> Self {
+        Self {
+            policy: UpdatePolicy::Download,
+            last_check: None,
+            dismissed: None,
+        }
+    }
+}
+
+/// What the updater may do without being asked.
+///
+/// The policy governs what happens **on its own**; every step stays available as an explicit
+/// action, because a button that refuses to work is a lie. Download by default, and no further:
+/// the point of the feature is that an installed AppImage does not quietly rot, and downloading is
+/// not installing — the image is fetched, verified and left next to the running one, waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdatePolicy {
+    /// Never look on our own.
+    Off,
+    /// Look, and say what is there.
+    Notify,
+    /// Look, and download what is there, verified and waiting.
+    #[default]
+    Download,
+    /// Look, download, and put it in place. It takes effect at the next start — nothing is ever
+    /// executed by the update itself.
+    Install,
+}
+
 /// Loads and saves [`Config`], remembering whether the file was there at all.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
@@ -438,9 +491,40 @@ mod tests {
                 port: 1080,
                 verify_seconds: 15,
             },
+            update: Update {
+                policy: UpdatePolicy::Install,
+                last_check: Some(1_759_680_000),
+                dismissed: Some("0.1.19".into()),
+            },
         };
         store.save(&config).unwrap();
         assert_eq!(store.load().unwrap(), config);
+    }
+
+    #[test]
+    fn updates_are_checked_and_downloaded_until_told_otherwise() {
+        let config = Config::default();
+        assert_eq!(config.update.policy, UpdatePolicy::Download);
+        assert_eq!(config.update.last_check, None);
+        assert_eq!(config.update.dismissed, None);
+
+        // A file written before the updater existed still loads, with the default policy.
+        let store = temp_store("update-partial");
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        fs::write(store.path(), r#"{"probe_enabled": true}"#).unwrap();
+        assert_eq!(store.load().unwrap().update.policy, UpdatePolicy::Download);
+    }
+
+    #[test]
+    fn the_policy_is_written_by_name_so_the_file_stays_readable() {
+        let store = temp_store("update-policy");
+        let mut config = Config::default();
+        config.update.policy = UpdatePolicy::Notify;
+        store.save(&config).unwrap();
+
+        let text = fs::read_to_string(store.path()).unwrap();
+        assert!(text.contains(r#""policy": "notify""#), "{text}");
+        assert_eq!(store.load().unwrap().update.policy, UpdatePolicy::Notify);
     }
 
     #[test]

@@ -17,9 +17,15 @@ to each release:
 **AppImage** — nothing to install:
 
 ```sh
-chmod +x ProtonVPN-GUI-x86_64.AppImage
-./ProtonVPN-GUI-x86_64.AppImage
+chmod +x ProtonVPN-GUI-<version>-x86_64.AppImage
+./ProtonVPN-GUI-<version>-x86_64.AppImage
 ```
+
+The image carries its version in its name and in its bytes (`--version` prints it), which is what
+lets it **update itself**: it compares that number against the latest release, and can fetch and
+verify a newer image and rename it over itself. Nothing downloaded is ever executed — the new image
+takes effect the next time you start it — and the file it replaced is kept beside it as
+`<name>.old` until that start proves the new one works. See [Updates](#updates).
 
 **Tarball** — the same binary, plus the `.desktop` entry, icon, README and LICENSE:
 
@@ -155,6 +161,46 @@ cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 ```
 
+## Updates
+
+An AppImage is a file, and nothing upgrades it: no package manager owns it, and the file that would
+have to be replaced is the one currently running. So the application does it, within bounds
+([`docs/architecture.md`](docs/architecture.md) §14):
+
+- it asks **its own release page** for `SHA256SUMS` — one URL, no GitHub API, no rate limit, and no
+  third party: `https://github.com/trousev/protonvpn-gui/releases/latest/download/SHA256SUMS`;
+- the version is read from the asset's own name, so the version and the checksum arrive together;
+- the image is downloaded, checked against that checksum and against the type-2 AppImage marker,
+  and **renamed** over the running one; it is never executed by the update;
+- the previous image stays as `<name>.old` for exactly one start, then goes.
+
+Four policies, in Настройки → Общие → Обновления, and `скачивать` is the default:
+
+| Policy | What happens without being asked |
+|---|---|
+| `не проверять` | nothing; the release page is only contacted if you press the button |
+| `только сообщать` | the latest release is reported, nothing is downloaded |
+| `скачивать` | the image is downloaded and verified, and waits next to the running one |
+| `скачивать и ставить` | …and renamed into place; it takes effect at the next start |
+
+Every step stays available as a button whatever the policy says. The check runs a few seconds after
+start and then at most once a day (`last_check` is remembered in the config, so restarting the
+application does not mean checking again), and it never blocks anything: the check and the download
+live on their own threads, and cancelling one kills `curl` and deletes the partial file.
+
+**What the checksum is worth.** It catches a truncated download, a proxy, a mirror serving an older
+file. It is **not** proof of authorship — whoever can answer for `github.com` can serve the image
+and the checksum together. That is what the release's build-provenance attestation is for, and it
+is checked by hand, not by the application:
+
+```sh
+gh attestation verify ProtonVPN-GUI-<version>-x86_64.AppImage --repo trousev/protonvpn-gui
+```
+
+Where the image cannot be written — root-owned, in `/opt`, a read-only filesystem — the app says so
+and leaves it alone: it never runs `sudo`. A build that is not an AppImage (the tarball, a `cargo
+run`) compares nothing, reports what the release page says and offers nothing.
+
 ## Configuration
 
 Everything the app itself owns lives in one file:
@@ -164,8 +210,8 @@ Everything the app itself owns lives in one file:
 ```
 
 It holds the app's own preferences (connect on start, start minimized, autostart, the app-menu
-entry, the egress probe, the port-forwarding lease, and the SOCKS5 address, port and verification
-interval) and the connections you build. There are no
+entry, the egress probe, the port-forwarding lease, the SOCKS5 address, port and verification
+interval, and the update policy with the date of the last check) and the connections you build. There are no
 secrets in it:
 
 - **Proton's own `settings.json` and `app-config.json` are never read or written.** Those belong
