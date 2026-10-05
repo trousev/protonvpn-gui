@@ -70,6 +70,16 @@ const KEYWORDS: &[&str] = &[
 /// One message id, and everything the checks and the code generator need to know about it.
 type Catalogue = BTreeMap<String, Message>;
 
+/// One locale: its messages, and the resources that did not parse.
+///
+/// The two are kept apart so that a typo in one file is reported once. A file that fails to parse
+/// contributes no messages, and without this the very next check would announce every one of them
+/// as untranslated — sixty lines of noise under the one line that says what is actually wrong.
+struct LocaleCatalogue {
+    messages: Catalogue,
+    broken: BTreeSet<String>,
+}
+
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let catalogues = manifest.join("i18n");
@@ -150,15 +160,16 @@ fn build(catalogues: &Path, sources: &[PathBuf]) -> Vec<String> {
     }
 
     // English first, in the sense that everything else is measured against it.
-    let mut all: BTreeMap<String, Catalogue> = BTreeMap::new();
+    let mut all: BTreeMap<String, LocaleCatalogue> = BTreeMap::new();
     for locale in &locales {
         if let Some(catalogue) = read_locale(&catalogues.join(locale), locale, &mut errors) {
             all.insert(locale.clone(), catalogue);
         }
     }
-    let Some(source) = all.get(SOURCE) else {
+    let Some(source_locale) = all.get(SOURCE) else {
         return errors;
     };
+    let source = &source_locale.messages;
 
     // Checks only the source language can carry: an id becomes a method name, and its prefix is the
     // file it lives in, so that "where is this string" has exactly one answer.
@@ -190,20 +201,24 @@ fn build(catalogues: &Path, sources: &[PathBuf]) -> Vec<String> {
             continue;
         };
 
-        for missing in resources_of(source).difference(&resources_of(mine)) {
+        for missing in resources_of(source_locale).difference(&resources_of(mine)) {
             errors.push(format!(
                 "i18n/{locale}: `{missing}.ftl` is missing. Every locale carries the same files, so \
                  that a gap is a missing file and not a message nobody noticed."
             ));
         }
-        for extra in resources_of(mine).difference(&resources_of(source)) {
+        for extra in resources_of(mine).difference(&resources_of(source_locale)) {
             errors.push(format!(
                 "i18n/{locale}: `{extra}.ftl` has no `i18n/{SOURCE}` counterpart"
             ));
         }
 
         for (id, message) in source {
-            let Some(translated) = mine.get(id) else {
+            // A resource that did not parse was already reported, once, where it happened.
+            if mine.broken.contains(&message.resource) {
+                continue;
+            }
+            let Some(translated) = mine.messages.get(id) else {
                 errors.push(format!("i18n/{locale}: `{id}` is untranslated"));
                 continue;
             };
@@ -243,7 +258,7 @@ fn build(catalogues: &Path, sources: &[PathBuf]) -> Vec<String> {
             }
         }
 
-        for id in mine.keys() {
+        for id in mine.messages.keys() {
             if !source.contains_key(id) {
                 errors.push(format!(
                     "i18n/{locale}: `{id}` does not exist in i18n/{SOURCE} — a translation cannot \
@@ -295,11 +310,14 @@ fn discover(catalogues: &Path) -> Vec<String> {
     locales
 }
 
-/// The set of `.ftl` stems a catalogue is built from.
-fn resources_of(catalogue: &Catalogue) -> BTreeSet<String> {
+/// The set of `.ftl` stems a locale is built from — including one that did not parse, which still
+/// exists and still has to be there in every other language.
+fn resources_of(catalogue: &LocaleCatalogue) -> BTreeSet<String> {
     catalogue
+        .messages
         .values()
         .map(|message| message.resource.clone())
+        .chain(catalogue.broken.iter().cloned())
         .collect()
 }
 
@@ -308,8 +326,9 @@ fn method_name(id: &str) -> String {
     id.replace('-', "_")
 }
 
-fn read_locale(dir: &Path, locale: &str, errors: &mut Vec<String>) -> Option<Catalogue> {
-    let mut out = Catalogue::new();
+fn read_locale(dir: &Path, locale: &str, errors: &mut Vec<String>) -> Option<LocaleCatalogue> {
+    let mut messages = Catalogue::new();
+    let mut broken = BTreeSet::new();
 
     let mut files: Vec<PathBuf> = fs::read_dir(dir)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", dir.display()))
@@ -333,6 +352,7 @@ fn read_locale(dir: &Path, locale: &str, errors: &mut Vec<String>) -> Option<Cat
             .and_then(|stem| stem.to_str())
             .expect("an .ftl file name")
             .to_string();
+        let _ = &resource;
         let text = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
 
@@ -351,6 +371,7 @@ fn read_locale(dir: &Path, locale: &str, errors: &mut Vec<String>) -> Option<Cat
                         error.pos.start
                     ));
                 }
+                broken.insert(resource.clone());
                 continue;
             }
         };
@@ -436,7 +457,7 @@ fn read_locale(dir: &Path, locale: &str, errors: &mut Vec<String>) -> Option<Cat
                 text: text.split_whitespace().collect::<Vec<_>>().join(" "),
                 variables,
             };
-            if out.insert(id.clone(), entry).is_some() {
+            if messages.insert(id.clone(), entry).is_some() {
                 errors.push(format!(
                     "i18n/{locale}: `{id}` is declared in more than one resource"
                 ));
@@ -444,7 +465,7 @@ fn read_locale(dir: &Path, locale: &str, errors: &mut Vec<String>) -> Option<Cat
         }
     }
 
-    Some(out)
+    Some(LocaleCatalogue { messages, broken })
 }
 
 /// Walk one pattern: gather the `$variables` in order of first appearance, remember whether each is
@@ -605,7 +626,7 @@ fn declare(variables: &mut Vec<Variable>, name: &str, kind: Kind) {
 fn generate(
     locales: &[String],
     source: &Catalogue,
-    all: &BTreeMap<String, Catalogue>,
+    all: &BTreeMap<String, LocaleCatalogue>,
 ) -> Result<(), String> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
 
