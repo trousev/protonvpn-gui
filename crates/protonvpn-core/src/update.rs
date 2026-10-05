@@ -270,10 +270,28 @@ impl fmt::Display for UpdateError {
 
 impl std::error::Error for UpdateError {}
 
+/// What the release page said.
+///
+/// The two answers are not variations of one another: "there is a release you could become" and
+/// "the page answered and there is nothing in it for this machine" are different facts, and
+/// neither of them is the third one — "we could not ask". [`UpdateError`] keeps the third.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Finding {
+    Release(Release),
+    /// Nothing installable, with the reason, because the reason is the useful part: a release
+    /// published before the asset's name carried a version is a different situation from a release
+    /// built for another architecture.
+    Nothing(String),
+}
+
 /// Asks the release page what the latest version is. One `curl`, one URL, no user data.
-pub fn latest(curl: &str) -> Result<Release, UpdateError> {
+pub fn latest(curl: &str) -> Result<Finding, UpdateError> {
     let body = curl_text(curl, &sums_url())?;
-    parse_sums(&body)
+    match parse_sums(&body) {
+        Ok(release) => Ok(Finding::Release(release)),
+        Err(UpdateError::NoAsset(why)) => Ok(Finding::Nothing(why)),
+        Err(other) => Err(other),
+    }
 }
 
 /// Downloads the release's image next to the installed one and proves it is what it claims to be.
@@ -949,6 +967,12 @@ mod tests {
         let body = "22a73dd65dae76738b301b2913a274b15331cc32f678aab3eeb0f344556673a6  protonvpn-gui-0.1.20-x86_64-linux.tar.gz\n70c8c123460c7d127d05d25b2b676965f4548a823467114e8615094c0b3cb8a5  ProtonVPN-GUI-x86_64.AppImage\n";
         let error = parse_sums(body).unwrap_err();
         assert!(matches!(error, UpdateError::NoAsset(_)), "{error:?}");
+
+        // And asking the way production does turns that into a finding rather than a failure: the
+        // page answered. The stand-in below plays both halves of the real request.
+        let dir = temp_dir("nothing-to-install");
+        let curl = stand_in(&dir, body, &image_bytes());
+        assert!(matches!(latest(&curl).unwrap(), Finding::Nothing(_)));
     }
 
     #[test]
@@ -1019,7 +1043,9 @@ mod tests {
         let curl = stand_in(&dir, &sums_for(&bytes, version), &bytes);
         let installed = install_image(&dir, "ProtonVPN-GUI-0.1.19-x86_64.AppImage", &image_bytes());
 
-        let release = latest(&curl).unwrap();
+        let Finding::Release(release) = latest(&curl).unwrap() else {
+            panic!("expected a release");
+        };
         assert_eq!(release.version, version);
 
         let mut progress = Vec::new();
@@ -1049,7 +1075,9 @@ mod tests {
         let curl = stand_in(&dir, &sums_for(&other, version), &bytes);
         let installed = install_image(&dir, "app.AppImage", &image_bytes());
 
-        let release = latest(&curl).unwrap();
+        let Finding::Release(release) = latest(&curl).unwrap() else {
+            panic!("expected a release");
+        };
         let error = fetch(
             &curl,
             &installed,
@@ -1077,7 +1105,9 @@ mod tests {
         let curl = stand_in(&dir, &sums_for(&page, version), &page);
         let installed = install_image(&dir, "app.AppImage", &image_bytes());
 
-        let release = latest(&curl).unwrap();
+        let Finding::Release(release) = latest(&curl).unwrap() else {
+            panic!("expected a release");
+        };
         let error = fetch(
             &curl,
             &installed,
@@ -1098,7 +1128,9 @@ mod tests {
         let curl = stand_in(&dir, &sums_for(&bytes, version), &bytes);
         let installed = install_image(&dir, "app.AppImage", &image_bytes());
 
-        let release = latest(&curl).unwrap();
+        let Finding::Release(release) = latest(&curl).unwrap() else {
+            panic!("expected a release");
+        };
         // Cancelled before it starts, which is the deterministic version of cancelling halfway.
         let cancel = AtomicBool::new(true);
         let error = fetch(&curl, &installed, &release, &cancel, |_, _| {}).unwrap_err();

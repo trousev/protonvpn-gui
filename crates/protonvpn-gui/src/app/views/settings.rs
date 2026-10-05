@@ -795,7 +795,15 @@ fn update_headline(update: &UpdateView) -> (Tone, String) {
             format!("{version} на месте — заработает после перезапуска"),
         ),
         UpdatePhase::Idle => match (update.current, update.latest) {
-            (_, None) => (Tone::Neutral, "ещё не проверяли".to_string()),
+            // "Never asked" and "asked, and there was nothing" are different answers, and the
+            // second one is what a build older than the naming convention will actually see.
+            (_, None) if update.checked_at.is_none() => {
+                (Tone::Neutral, "ещё не проверяли".to_string())
+            }
+            (_, None) => (
+                Tone::Neutral,
+                "в последнем релизе нет образа, который я мог бы поставить".to_string(),
+            ),
             (Some(current), Some(latest)) if current < latest => {
                 (Tone::Warning, format!("доступна {latest}"))
             }

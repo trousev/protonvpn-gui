@@ -177,7 +177,7 @@ pub enum UpdateEvent {
     Checked {
         started_at: SystemTime,
         duration: Duration,
-        result: Result<Release, UpdateError>,
+        result: Result<update::Finding, UpdateError>,
     },
     Progress {
         received: u64,
@@ -2209,7 +2209,20 @@ impl Engine {
                 let command = update::describe_sums_call();
 
                 match result {
-                    Ok(release) => {
+                    // The page answered and there is nothing in it this build could become —
+                    // a release published before the asset's name carried a version, or one built
+                    // for another machine. A finding, not a failure: it is worth saying once, and
+                    // it is not worth retrying in six hours.
+                    Ok(update::Finding::Nothing(why)) => {
+                        self.update.error = None;
+                        self.update.latest = None;
+                        self.update.phase = UpdatePhase::Idle;
+                        self.release = None;
+                        self.remember_check(Instant::now() + UPDATE_INTERVAL);
+                        self.record_note(command, vec![why.clone()], started_at, duration);
+                        self.note(&why);
+                    }
+                    Ok(update::Finding::Release(release)) => {
                         self.update.error = None;
                         self.update.latest = Some(release.version);
                         self.update.phase = UpdatePhase::Idle;
@@ -3721,6 +3734,43 @@ esac
         assert!(matches!(shared.update.phase, UpdatePhase::Idle));
         assert!(!installed.staging_path().exists());
         assert_eq!(fs::read(installed.path()).unwrap(), old);
+
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_release_with_nothing_to_install_is_a_finding_and_not_a_failure() {
+        let dir = TempDir::new("update-nothing");
+        let (installed, _, _, _, _) = update_fixture(&dir, "ProtonVPN-GUI-0.1.20-x86_64.AppImage");
+        // A release whose AppImage has no version in its name — the state of every release up to
+        // and including 0.1.20, which is exactly what someone running one of those builds sees.
+        let body = format!("{}  ProtonVPN-GUI-x86_64.AppImage\n", "a".repeat(64));
+        let curl = stand_in(dir.path(), &body, &image_bytes());
+
+        let handle = start_updating(
+            &dir,
+            UpdatePolicy::Download,
+            Some(release_0_1_20()),
+            Some(installed.clone()),
+            curl,
+            Duration::from_millis(50),
+        );
+
+        let shared = wait_for(&handle, "the page to answer", |shared| {
+            shared.update.checked_at.is_some()
+        })
+        .unwrap();
+
+        assert!(matches!(shared.update.phase, UpdatePhase::Idle));
+        assert!(shared.update.latest.is_none());
+        assert!(
+            shared.update.error.is_none(),
+            "nothing to install is not a failure: {:?}",
+            shared.update.error
+        );
+        let note = shared.note.clone().unwrap_or_default();
+        assert!(note.contains("SHA256SUMS"), "{note}");
+        assert!(!installed.staging_path().exists());
 
         assert!(handle.shutdown(Duration::from_secs(5)));
     }
