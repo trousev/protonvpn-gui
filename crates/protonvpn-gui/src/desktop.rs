@@ -70,7 +70,11 @@ impl Desktop {
     }
 
     /// `$XDG_DATA_HOME/icons/hicolor/256x256/apps/protonvpn-gui.png`, or under `~/.local/share`.
-    /// The theme is what the shell searches for `Icon=`; a file next to the binary is invisible.
+    ///
+    /// This is both the file [`Desktop::sync_entry`] writes and the path the entry's `Icon=` key
+    /// spells out, so the icon is never *looked up* — see [`entry`] for why that matters. It also
+    /// stays where the icon theme spec says an application icon belongs, because the packaged
+    /// entry, which has no user's home to point at, can only name it.
     pub fn icon_path(&self) -> PathBuf {
         self.data_home
             .join("icons")
@@ -95,7 +99,7 @@ impl Desktop {
             return Ok(None);
         }
 
-        write_if_changed(&entry_path, entry(exec).as_bytes())?;
+        write_if_changed(&entry_path, entry(exec, &icon_path).as_bytes())?;
         write_if_changed(&icon_path, ICON)?;
         Ok(Some(entry_path))
     }
@@ -105,7 +109,7 @@ impl Desktop {
     pub fn sync_autostart(&self, enabled: bool, exec: &str) -> io::Result<Option<PathBuf>> {
         let path = self.autostart_path();
         if enabled {
-            write_if_changed(&path, autostart_entry(exec).as_bytes())?;
+            write_if_changed(&path, autostart_entry(exec, &self.icon_path()).as_bytes())?;
             Ok(Some(path))
         } else {
             remove_if_present(&path)?;
@@ -125,7 +129,17 @@ impl Desktop {
 }
 
 /// The application entry: what a desktop reads to name our window and draw its icon.
-pub fn entry(exec: &str) -> String {
+///
+/// `Icon=` is the **absolute path** of the file the app installs, never the bare name
+/// `protonvpn-gui`. A name is an icon-theme lookup, and GTK answers a lookup of
+/// `~/.local/share/icons/hicolor` out of that directory's `icon-theme.cache` when one is there —
+/// a listing that nothing rebuilds when a file appears underneath it. Measured: with a cache
+/// dated 2026-09-27 and our PNG written 2026-10-05, `Gtk.IconTheme.has_icon("protonvpn-gui")`
+/// was false in a fresh GTK 3 and a fresh GTK 4 process, while `steam.png` and the `chrome-*`
+/// icons in the same directory resolved — they predate the cache; removing or rebuilding it made
+/// ours resolve too. GNOME Shell 50 drew the gear for exactly that reason. A path needs no theme,
+/// no cache and no cooperation, and every desktop accepts one.
+pub fn entry(exec: &str, icon: &Path) -> String {
     format!(
         "\
 [Desktop Entry]
@@ -135,21 +149,22 @@ Name=Proton VPN GUI
 GenericName=VPN client
 Comment=Console-first wrapper around the official protonvpn CLI
 Exec={}
-Icon={APP_ID}
+Icon={}
 Terminal=false
 Categories=Network;Security;
 Keywords=VPN;Proton;protonvpn;
 StartupNotify=false
 StartupWMClass={APP_ID}
 ",
-        exec_value(exec)
+        exec_value(exec),
+        icon_value(icon)
     )
 }
 
 /// The autostart entry. XDG autostart is the same file with one extra key — nothing in it depends
 /// on what autostart adds, so this stays one template instead of two that drift apart.
-pub fn autostart_entry(exec: &str) -> String {
-    format!("{}X-GNOME-Autostart-enabled=true\n", entry(exec))
+pub fn autostart_entry(exec: &str, icon: &Path) -> String {
+    format!("{}X-GNOME-Autostart-enabled=true\n", entry(exec, icon))
 }
 
 /// The running program, as a `.desktop` file has to spell it.
@@ -201,6 +216,27 @@ fn exec_value(path: &str) -> String {
     quoted
 }
 
+/// A path as the `Icon` key spells it.
+///
+/// This is not [`exec_value`]: `Icon` has no quoting rules, and a space in the path is just a
+/// space. What it does share is a key file's escapes — `\\`, `\n`, `\t` and `\r` are read back as
+/// something else — so those four are written the long way. A path without them passes through
+/// untouched, which is every path anyone actually has.
+fn icon_value(path: &Path) -> String {
+    let mut value = String::with_capacity(path.as_os_str().len());
+
+    for character in path.to_string_lossy().chars() {
+        match character {
+            '\\' => value.push_str("\\\\"),
+            '\n' => value.push_str("\\n"),
+            '\t' => value.push_str("\\t"),
+            '\r' => value.push_str("\\r"),
+            _ => value.push(character),
+        }
+    }
+    value
+}
+
 fn remove_if_present(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -237,11 +273,18 @@ mod tests {
 
     #[test]
     fn the_entry_is_an_application_entry_with_our_own_app_id() {
-        let entry = entry("/usr/bin/protonvpn-gui");
+        let icon = Path::new("/home/u/.local/share/icons/hicolor/256x256/apps/protonvpn-gui.png");
+        let entry = entry("/usr/bin/protonvpn-gui", icon);
         assert!(entry.starts_with("[Desktop Entry]"));
         assert!(entry.contains("Type=Application"));
         assert!(entry.contains("Exec=/usr/bin/protonvpn-gui"));
-        assert!(entry.contains("Icon=protonvpn-gui"));
+        // A path, never the name `protonvpn-gui`: a name is a theme lookup, and a theme lookup is
+        // answered from a cache that nothing rebuilds. `entry`'s doc has the measurement.
+        assert!(
+            entry
+                .contains("Icon=/home/u/.local/share/icons/hicolor/256x256/apps/protonvpn-gui.png")
+        );
+        assert!(!entry.contains("Icon=protonvpn-gui\n"));
         assert!(entry.contains("StartupWMClass=protonvpn-gui"));
         assert!(entry.contains("Categories=Network;Security;"));
         // The one bus name we must never claim.
@@ -251,12 +294,13 @@ mod tests {
 
     #[test]
     fn the_autostart_entry_is_the_same_entry_plus_the_autostart_key() {
-        let autostart = autostart_entry("/usr/bin/protonvpn-gui");
+        let icon = Path::new("/home/u/.local/share/icons/hicolor/256x256/apps/protonvpn-gui.png");
+        let autostart = autostart_entry("/usr/bin/protonvpn-gui", icon);
         assert!(autostart.contains("X-GNOME-Autostart-enabled=true"));
         // One template: dropping the extra key has to leave exactly the application entry.
         assert_eq!(
             autostart.replace("X-GNOME-Autostart-enabled=true\n", ""),
-            self::entry("/usr/bin/protonvpn-gui")
+            self::entry("/usr/bin/protonvpn-gui", icon)
         );
     }
 
@@ -264,10 +308,16 @@ mod tests {
     fn the_packaged_entry_says_the_same_thing_as_the_generated_one() {
         // The AppImage ships `packaging/protonvpn-gui.desktop`; the app installs what `entry`
         // builds. They may differ in `Exec` (the package is started as `protonvpn-gui`, the
-        // installed one knows its own path) and in nothing else — a name or an icon that drifted
+        // installed one knows its own path) and in `Icon` — a package is built before anyone's
+        // home exists, so it can only name the icon and expect the installer to place the file in
+        // the system theme, where a package manager also maintains the cache; the installed entry
+        // points at its own copy instead. In nothing else may they differ: a name that drifted
         // apart would brand the window one way and the menu another.
         let packaged = include_str!("../../../packaging/protonvpn-gui.desktop");
-        let generated = entry("protonvpn-gui");
+        let generated = entry(
+            "protonvpn-gui",
+            Path::new("/home/u/.local/share/icons/hicolor/256x256/apps/protonvpn-gui.png"),
+        );
 
         fn fields(text: &str) -> Vec<(String, String)> {
             let mut fields: Vec<(String, String)> = text
@@ -281,9 +331,15 @@ mod tests {
 
         let mut packaged_fields = fields(packaged);
         let mut generated_fields = fields(&generated);
-        packaged_fields.retain(|(key, _)| key != "Exec");
-        generated_fields.retain(|(key, _)| key != "Exec");
+        for fields in [&mut packaged_fields, &mut generated_fields] {
+            fields.retain(|(key, _)| key != "Exec" && key != "Icon");
+        }
         assert_eq!(packaged_fields, generated_fields);
+
+        // The exclusion above may only hide the difference just described: one names the icon,
+        // the other spells it as a path, and it is the packaged one that names it.
+        assert!(packaged.contains("Icon=protonvpn-gui\n"));
+        assert!(generated.contains("Icon=/"));
     }
 
     #[test]
@@ -299,6 +355,55 @@ mod tests {
         // Reserved inside the quotes, and `%` is a field code wherever it appears.
         assert_eq!(exec_value("/a$b/c`d"), "\"/a\\$b/c\\`d\"");
         assert_eq!(exec_value("/100%/app"), "/100%%/app");
+    }
+
+    #[test]
+    fn the_installed_entry_names_the_icon_the_app_installed() {
+        // The property the whole arrangement exists for: what the entry says and what is on disk
+        // are the same file, spelled as a path. A theme that never rebuilds its cache cannot
+        // come between them.
+        let desktop = temp_desktop("entry-icon");
+        desktop
+            .sync_entry(true, "/opt/Proton VPN.AppImage")
+            .unwrap();
+
+        let icon = desktop.icon_path();
+        assert!(icon.is_absolute(), "{}", icon.display());
+        assert!(icon.is_file(), "{}", icon.display());
+
+        let written = fs::read_to_string(desktop.entry_path()).unwrap();
+        assert!(
+            written.contains(&format!("Icon={}\n", icon.display())),
+            "{written}"
+        );
+
+        let _ = fs::remove_dir_all(desktop.entry_path().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn a_path_is_escaped_for_the_icon_key_but_never_quoted() {
+        // This key has no quoting rules: a space is a space, and `$` and `%` mean nothing.
+        assert_eq!(
+            icon_value(Path::new("/home/a/My Icons/x.png")),
+            "/home/a/My Icons/x.png"
+        );
+        assert_eq!(
+            icon_value(Path::new("/home/a$b/100%/x.png")),
+            "/home/a$b/100%/x.png"
+        );
+        // What it does have is a key file's escapes, and those are read back as something else.
+        assert_eq!(
+            icon_value(Path::new(r"/home/a\b/x.png")),
+            r"/home/a\\b/x.png"
+        );
+        assert_eq!(
+            icon_value(Path::new("/home/a\nb/x.png")),
+            r"/home/a\nb/x.png"
+        );
+        assert_eq!(
+            icon_value(Path::new("/home/a\tb/x.png")),
+            r"/home/a\tb/x.png"
+        );
     }
 
     #[test]
