@@ -15,10 +15,13 @@ use super::status_tone;
 
 pub(crate) fn view(app: &App) -> Element<'_, Message> {
     let header = row![
-        column![widgets::eyebrow("Обзор"), text("Соединение").size(22),]
-            .spacing(2)
-            .width(Length::Fill),
-        button(text("Обновить статус").size(13))
+        column![
+            widgets::eyebrow(app.i18n.overview_page_eyebrow()),
+            text(app.i18n.overview_page_title()).size(22),
+        ]
+        .spacing(2)
+        .width(Length::Fill),
+        button(text(app.i18n.overview_refresh_status()).size(13))
             .padding(Padding::from([8, 14]))
             .style(theme::outlined(theme::BORDER, theme::TEXT))
             .on_press(Message::RefreshStatus),
@@ -48,22 +51,28 @@ fn status_card(app: &App) -> Element<'_, Message> {
     let status = &connection.value;
 
     let (title, extra) = match status {
-        ConnectionStatus::Connected(info) => (format!("{} в {}", info.server, info.location), None),
-        ConnectionStatus::Connecting => ("Подключаюсь…".to_string(), None),
-        ConnectionStatus::Disconnected => ("Нет активного туннеля".to_string(), None),
-        ConnectionStatus::Error(message) => ("CLI отказал".to_string(), Some(message.clone())),
+        ConnectionStatus::Connected(info) => (
+            app.i18n
+                .overview_status_connected(info.server.as_str(), info.location.as_str()),
+            None,
+        ),
+        ConnectionStatus::Connecting => (app.i18n.overview_status_connecting(), None),
+        ConnectionStatus::Disconnected => (app.i18n.overview_status_disconnected(), None),
+        ConnectionStatus::Error(message) => {
+            (app.i18n.overview_status_error(), Some(message.clone()))
+        }
         ConnectionStatus::Unknown => (
-            "Состояние неизвестно".to_string(),
-            Some("CLI ещё не отвечал — состояние не выдумывается.".to_string()),
+            app.i18n.overview_status_unknown(),
+            Some(app.i18n.overview_status_unknown_note()),
         ),
     };
 
     let connected = status.is_connected();
     let action = button(
         text(if connected {
-            "Отключиться"
+            app.i18n.overview_disconnect()
         } else {
-            "Подключиться"
+            app.i18n.overview_connect()
         })
         .size(14),
     )
@@ -84,25 +93,25 @@ fn status_card(app: &App) -> Element<'_, Message> {
 
     let facts = match status {
         ConnectionStatus::Connected(info) => row![
-            widgets::tile("Сервер", info.server.clone()),
-            widgets::tile("Город", location_city(&info.location)),
+            widgets::tile(app.i18n.overview_tile_server(), info.server.clone()),
+            widgets::tile(app.i18n.overview_tile_city(), location_city(&info.location)),
             widgets::tile(
-                "Нагрузка",
+                app.i18n.overview_tile_load(),
                 info.load_percent
                     .map(|load| format!("{load}%"))
                     .unwrap_or_else(|| "—".into()),
             ),
             widgets::tile(
-                "Протокол",
+                app.i18n.overview_tile_protocol(),
                 info.protocol.clone().unwrap_or_else(|| "—".into()),
             ),
         ]
         .spacing(10),
         _ => row![
-            widgets::tile("Сервер", "—"),
-            widgets::tile("Город", "—"),
-            widgets::tile("Нагрузка", "—"),
-            widgets::tile("Протокол", "—"),
+            widgets::tile(app.i18n.overview_tile_server(), "—"),
+            widgets::tile(app.i18n.overview_tile_city(), "—"),
+            widgets::tile(app.i18n.overview_tile_load(), "—"),
+            widgets::tile(app.i18n.overview_tile_protocol(), "—"),
         ]
         .spacing(10),
     };
@@ -110,11 +119,10 @@ fn status_card(app: &App) -> Element<'_, Message> {
     let mut body = column![
         head,
         text(title).size(19),
-        widgets::muted(format!(
-            "{} · соединение: {}",
-            app.i18n.age_text(connection.age()),
-            app.selected_name()
-        )),
+        widgets::muted(
+            app.i18n
+                .overview_age_and_target(app.i18n.age_text(connection.age()), app.selected_name(),)
+        ),
         text(format!("$ {}", selected_argv(app)))
             .size(12)
             .font(Font::MONOSPACE)
@@ -150,13 +158,13 @@ fn egress_card(app: &App) -> Element<'_, Message> {
     let baseline: Option<&Reading> = egress.baseline.as_ref();
 
     let verdict: Element<'_, Message> = match egress.egress_changed() {
-        Some(true) => text("адрес изменился")
+        Some(true) => text(app.i18n.overview_egress_changed())
             .size(12)
             .style(|_: &Theme| iced::widget::text::Style {
                 color: Some(theme::SUCCESS),
             })
             .into(),
-        Some(false) => text("адрес не изменился")
+        Some(false) => text(app.i18n.overview_egress_unchanged())
             .size(12)
             .style(|_: &Theme| iced::widget::text::Style {
                 color: Some(theme::WARNING),
@@ -166,10 +174,10 @@ fn egress_card(app: &App) -> Element<'_, Message> {
     };
 
     let head = row![
-        widgets::eyebrow("Проба egress · ground truth"),
+        widgets::eyebrow(app.i18n.overview_egress_eyebrow()),
         Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
         verdict,
-        button(text("Измерить").size(12))
+        button(text(app.i18n.overview_egress_measure()).size(12))
             .padding(Padding::from([4, 10]))
             .style(theme::outlined(theme::BORDER, theme::TEXT))
             .on_press(Message::Probe),
@@ -192,27 +200,23 @@ fn egress_card(app: &App) -> Element<'_, Message> {
         .unwrap_or_else(|| "—".into());
 
     let rows = column![
-        widgets::fact_row("IPv4 (проба)", address(current)),
+        widgets::fact_row(app.i18n.overview_egress_ipv4(), address(current)),
         widgets::separator(),
-        widgets::fact_row("До подключения", address(baseline)),
+        widgets::fact_row(app.i18n.overview_egress_baseline(), address(baseline)),
         widgets::separator(),
-        widgets::fact_row("Страна (справочно)", country),
+        widgets::fact_row(app.i18n.overview_egress_country(), country),
         widgets::separator(),
-        widgets::fact_row("ASN / организация", asn),
+        widgets::fact_row(app.i18n.overview_egress_asn(), asn),
         widgets::separator(),
-        widgets::fact_row("Источник", endpoint),
+        widgets::fact_row(app.i18n.overview_egress_source(), endpoint),
     ]
     .spacing(8);
 
     let explanation = match egress.egress_changed() {
-        Some(true) => "Адрес изменился — трафик идёт через туннель.".to_string(),
-        Some(false) => "Адрес не изменился. Если CLI говорит «подключено», туннель не несёт \
-                        трафик."
-            .to_string(),
-        None if current.is_some() => {
-            "Сравнить не с чем: адрес получен до того, как мы начали мерить.".to_string()
-        }
-        None => "Проба выполняется после подключения — туннель не активен.".to_string(),
+        Some(true) => app.i18n.overview_egress_changed_note(),
+        Some(false) => app.i18n.overview_egress_unchanged_note(),
+        None if current.is_some() => app.i18n.overview_egress_no_baseline(),
+        None => app.i18n.overview_egress_no_tunnel(),
     };
 
     widgets::card(
@@ -221,11 +225,7 @@ fn egress_card(app: &App) -> Element<'_, Message> {
             widgets::separator(),
             rows,
             widgets::note(explanation),
-            widgets::faint(
-                "Проба к ifconfig.co/json — единственный внешний вызов помимо protonvpn. CLI \
-                 может ошибаться в адресе выхода, поэтому источник истины — измерение, а не \
-                 самоотчёт. Страна и ASN — только для чтения: базы GeoIP расходятся между собой."
-            ),
+            widgets::faint(app.i18n.overview_egress_provenance()),
         ]
         .spacing(12),
     )
@@ -235,9 +235,9 @@ fn egress_card(app: &App) -> Element<'_, Message> {
 
 fn connections_card(app: &App) -> Element<'_, Message> {
     let head = row![
-        widgets::eyebrow("Соединения"),
+        widgets::eyebrow(app.i18n.overview_connections_eyebrow()),
         Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
-        button(text("Добавить соединение").size(13))
+        button(text(app.i18n.overview_connections_add()).size(13))
             .padding(Padding::from([7, 12]))
             .style(theme::outlined(theme::BORDER, theme::TEXT))
             .on_press(Message::ConnectionNew),
@@ -245,19 +245,16 @@ fn connections_card(app: &App) -> Element<'_, Message> {
     .align_y(Alignment::Center);
 
     let mut list = column![
-        widgets::faint("Системные · не редактируются"),
+        widgets::faint(app.i18n.overview_connections_system()),
         preset_row(app, SystemPreset::Fastest),
         preset_row(app, SystemPreset::SecureCore),
         preset_row(app, SystemPreset::P2p),
-        widgets::faint("Мои соединения"),
+        widgets::faint(app.i18n.overview_connections_mine()),
     ]
     .spacing(8);
 
     if app.config.connections.is_empty() {
-        list = list.push(widgets::note(
-            "Пока нет своих соединений. «Добавить соединение» соберёт профиль: страна, город, \
-             P2P, Secure Core, Tor и проброс порта.",
-        ));
+        list = list.push(widgets::note(app.i18n.overview_connections_empty()));
     }
     for saved in &app.config.connections {
         list = list.push(saved_row(app, saved));
@@ -267,9 +264,7 @@ fn connections_card(app: &App) -> Element<'_, Message> {
         column![
             head,
             list,
-            widgets::faint(
-                "Подключение всегда выполняется для выбранного соединения: protonvpn connect."
-            ),
+            widgets::faint(app.i18n.overview_connections_footer()),
         ]
         .spacing(12),
     )
@@ -348,11 +343,11 @@ fn saved_row<'a>(app: &'a App, saved: &'a SavedConnection) -> Element<'a, Messag
         row![
             badges,
             Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
-            button(text("Изменить").size(12))
+            button(text(app.i18n.overview_connection_edit()).size(12))
                 .padding(Padding::from([4, 8]))
                 .style(theme::ghost(theme::TEXT_MUTED, false))
                 .on_press(Message::ConnectionEdit(id.clone())),
-            button(text("Удалить").size(12))
+            button(text(app.i18n.overview_connection_delete()).size(12))
                 .padding(Padding::from([4, 6]))
                 .style(theme::ghost(theme::TEXT_MUTED, false))
                 .on_press(Message::ConnectionDelete(id.clone())),
@@ -400,19 +395,19 @@ fn port_card(app: &App) -> Element<'_, Message> {
     let state = &app.shared.state.port_forwarding;
 
     let status_text = if !wants {
-        "выключен для этого соединения"
+        app.i18n.overview_port_off()
     } else {
         match &state.value {
-            PortForwarding::Active { .. } => "аренда активна",
-            PortForwarding::Pending => "запрашиваю аренду",
-            PortForwarding::Unsupported => "сервер не поддерживает",
-            PortForwarding::Unavailable(_) => "недоступен",
-            PortForwarding::Idle => "аренды нет",
+            PortForwarding::Active { .. } => app.i18n.overview_port_active(),
+            PortForwarding::Pending => app.i18n.overview_port_pending(),
+            PortForwarding::Unsupported => app.i18n.overview_port_unsupported(),
+            PortForwarding::Unavailable(_) => app.i18n.overview_port_unavailable(),
+            PortForwarding::Idle => app.i18n.overview_port_idle(),
         }
     };
 
     let head = row![
-        widgets::eyebrow("Порт-форвардинг"),
+        widgets::eyebrow(app.i18n.overview_port_eyebrow()),
         Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
         widgets::faint(status_text),
     ]
@@ -425,24 +420,21 @@ fn port_card(app: &App) -> Element<'_, Message> {
                     .size(34)
                     .font(Font::MONOSPACE)
                     .width(Length::Fill),
-                button(text("Копировать").size(12))
+                button(text(app.i18n.overview_port_copy()).size(12))
                     .padding(Padding::from([6, 12]))
                     .style(theme::filled(theme::ACCENT))
                     .on_press(Message::CopyPort),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            widgets::muted(format!(
-                "аренда {} с, продлевается автоматически",
-                lifetime.as_secs()
-            )),
+            widgets::muted(app.i18n.overview_port_lease(lifetime.as_secs() as i64)),
             if app
                 .copied_port_at
                 .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2))
             {
-                widgets::muted("Порт скопирован в буфер обмена")
+                widgets::muted(app.i18n.overview_port_copied())
             } else {
-                widgets::faint("Порт выдаётся шлюзом и меняется после переподключения.")
+                widgets::faint(app.i18n.overview_port_volatile())
             },
         ]
         .spacing(6)
@@ -450,30 +442,25 @@ fn port_card(app: &App) -> Element<'_, Message> {
         (true, PortForwarding::Unavailable(reason)) => column![
             text("—").size(34).font(Font::MONOSPACE),
             widgets::note(reason.clone()),
-            widgets::faint(
-                "Порт не показывается намеренно: показывать номер, который никто не продлевает, \
-                 значит вводить в заблуждение."
-            ),
+            widgets::faint(app.i18n.overview_port_hidden()),
         ]
         .spacing(6)
         .into(),
         (true, PortForwarding::Pending) => column![
             text("—").size(34).font(Font::MONOSPACE),
-            widgets::muted("Запрашиваю аренду у шлюза через NAT-PMP…"),
+            widgets::muted(app.i18n.overview_port_requesting()),
         ]
         .spacing(6)
         .into(),
         (true, PortForwarding::Unsupported) => column![
             text("—").size(34).font(Font::MONOSPACE),
-            widgets::muted(
-                "Этот сервер не поддерживает проброс порта. Подключитесь к P2P-серверу."
-            ),
+            widgets::muted(app.i18n.overview_port_unsupported_note()),
         ]
         .spacing(6)
         .into(),
         _ => column![
             text("—").size(34).font(Font::MONOSPACE),
-            widgets::muted("Аренды нет."),
+            widgets::muted(app.i18n.overview_port_none()),
         ]
         .spacing(6)
         .into(),
@@ -482,23 +469,20 @@ fn port_card(app: &App) -> Element<'_, Message> {
     let toggle: Element<'_, Message> = match app.selected_saved() {
         Some(saved) => row![
             iced::widget::toggler(saved.port_forwarding)
-                .label("Держать аренду для этого профиля")
+                .label(app.i18n.overview_port_keep())
                 .text_size(13)
                 .on_toggle(Message::SelectedPortForwarding),
         ]
         .into(),
-        None => widgets::faint(
-            "Системные пресеты не редактируются: профиль создаётся кнопкой «Добавить \
-             соединение».",
-        ),
+        None => widgets::faint(app.i18n.overview_port_system_preset()),
     };
 
     let controls = row![
-        button(text("Запросить заново").size(12))
+        button(text(app.i18n.overview_port_refresh()).size(12))
             .padding(Padding::from([5, 10]))
             .style(theme::outlined(theme::BORDER, theme::TEXT))
             .on_press(Message::PortRefresh),
-        button(text("Освободить").size(12))
+        button(text(app.i18n.overview_port_release()).size(12))
             .padding(Padding::from([5, 10]))
             .style(theme::outlined(theme::BORDER, theme::TEXT_MUTED))
             .on_press(Message::PortRelease),
@@ -511,11 +495,7 @@ fn port_card(app: &App) -> Element<'_, Message> {
             port_block,
             toggle,
             controls,
-            widgets::faint(
-                "Порт выдаётся лизом NAT-PMP у 10.2.0.1:5351 (RFC 6886) только если это включено \
-                 в выбранном соединении — порт-форвардинг является частью профиля. Перед запросом \
-                 отправляется opcode 0: если шлюз не отвечает, порт не показывается."
-            ),
+            widgets::faint(app.i18n.overview_port_provenance()),
         ]
         .spacing(10),
     )
@@ -527,4 +507,167 @@ pub(crate) fn selected_argv(app: &App) -> String {
     Intent::Connect(selected_target(&app.config))
         .argv()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use protonvpn_core::i18n::{I18n, Locale};
+
+    fn english() -> I18n {
+        I18n::new(Locale::SOURCE)
+    }
+
+    /// Tests run in the source language, so these are the words the page actually draws. A change
+    /// to the catalogue then has to be a decision taken twice, here as well as there.
+    #[test]
+    fn the_status_card_wording_is_the_catalogue() {
+        let i18n = english();
+        assert_eq!(i18n.overview_page_eyebrow(), "Overview");
+        assert_eq!(i18n.overview_page_title(), "Connection");
+        assert_eq!(i18n.overview_refresh_status(), "Refresh status");
+        assert_eq!(i18n.overview_status_connecting(), "Connecting…");
+        assert_eq!(i18n.overview_status_disconnected(), "No active tunnel");
+        assert_eq!(i18n.overview_status_error(), "The CLI refused");
+        assert_eq!(i18n.overview_status_unknown(), "The state is unknown");
+        // The honesty of §5 is part of the wording, not of the layout: an unknown state says so.
+        assert_eq!(
+            i18n.overview_status_unknown_note(),
+            "The CLI has not answered yet — the state is not invented."
+        );
+        assert_eq!(i18n.overview_disconnect(), "Disconnect");
+        assert_eq!(i18n.overview_connect(), "Connect");
+        assert_eq!(i18n.overview_tile_server(), "Server");
+        assert_eq!(i18n.overview_tile_city(), "City");
+        assert_eq!(i18n.overview_tile_load(), "Load");
+        assert_eq!(i18n.overview_tile_protocol(), "Protocol");
+    }
+
+    /// The probe card is the one place the application contradicts the CLI out loud. Every one of
+    /// these lines is a design decision (`docs/architecture.md` §13, `docs/cli-surface.md` §4.9),
+    /// and softening one of them is a change of meaning — so they are pinned too.
+    #[test]
+    fn the_egress_card_wording_is_the_catalogue() {
+        let i18n = english();
+        assert_eq!(i18n.overview_egress_changed(), "address changed");
+        assert_eq!(i18n.overview_egress_unchanged(), "address did not change");
+        assert_eq!(
+            i18n.overview_egress_eyebrow(),
+            "Egress probe · ground truth"
+        );
+        assert_eq!(i18n.overview_egress_measure(), "Measure");
+        assert_eq!(i18n.overview_egress_ipv4(), "IPv4 (probe)");
+        assert_eq!(i18n.overview_egress_baseline(), "Before connecting");
+        assert_eq!(i18n.overview_egress_country(), "Country (advisory)");
+        assert_eq!(i18n.overview_egress_asn(), "ASN / organization");
+        assert_eq!(i18n.overview_egress_source(), "Source");
+        assert_eq!(
+            i18n.overview_egress_changed_note(),
+            "The address changed — traffic is going through the tunnel."
+        );
+        assert_eq!(
+            i18n.overview_egress_unchanged_note(),
+            "The address did not change. If the CLI says \"connected\", the tunnel is not \
+             carrying traffic."
+        );
+        assert_eq!(
+            i18n.overview_egress_no_baseline(),
+            "There is nothing to compare against: this address was read before we started \
+             measuring."
+        );
+        assert_eq!(
+            i18n.overview_egress_no_tunnel(),
+            "The probe runs after connecting — the tunnel is not active."
+        );
+        assert_eq!(
+            i18n.overview_egress_provenance(),
+            "The probe to ifconfig.co/json is the only external call besides protonvpn. The CLI \
+             can be wrong about the egress address, so the ground truth is a measurement, not a \
+             self-report. Country and ASN are advisory only: GeoIP databases disagree with each \
+             other."
+        );
+    }
+
+    #[test]
+    fn the_connections_and_port_wording_is_the_catalogue() {
+        let i18n = english();
+        assert_eq!(i18n.overview_connections_eyebrow(), "Connections");
+        assert_eq!(i18n.overview_connections_add(), "Add connection");
+        assert_eq!(i18n.overview_connections_system(), "System · not editable");
+        assert_eq!(i18n.overview_connections_mine(), "My connections");
+        assert_eq!(
+            i18n.overview_connections_empty(),
+            "No connections of your own yet. \"Add connection\" builds a profile: country, city, \
+             P2P, Secure Core, Tor and port forwarding."
+        );
+        assert_eq!(
+            i18n.overview_connections_footer(),
+            "Connecting always runs for the selected connection: protonvpn connect."
+        );
+        assert_eq!(i18n.overview_connection_edit(), "Edit");
+        assert_eq!(i18n.overview_connection_delete(), "Delete");
+
+        assert_eq!(i18n.overview_port_eyebrow(), "Port forwarding");
+        assert_eq!(i18n.overview_port_off(), "off for this connection");
+        assert_eq!(i18n.overview_port_active(), "lease active");
+        assert_eq!(i18n.overview_port_pending(), "asking for a lease");
+        assert_eq!(
+            i18n.overview_port_unsupported(),
+            "the server does not support it"
+        );
+        assert_eq!(i18n.overview_port_unavailable(), "unavailable");
+        assert_eq!(i18n.overview_port_idle(), "no lease");
+        assert_eq!(i18n.overview_port_copy(), "Copy");
+        assert_eq!(i18n.overview_port_copied(), "Port copied to the clipboard");
+        assert_eq!(
+            i18n.overview_port_volatile(),
+            "The gateway hands out the port, and it changes after a reconnect."
+        );
+        assert_eq!(
+            i18n.overview_port_hidden(),
+            "The port is deliberately not shown: showing a number nobody is renewing would be \
+             misleading."
+        );
+        assert_eq!(
+            i18n.overview_port_unsupported_note(),
+            "This server does not support port forwarding. Connect to a P2P server."
+        );
+        assert_eq!(i18n.overview_port_none(), "There is no lease.");
+        assert_eq!(
+            i18n.overview_port_requesting(),
+            "Asking the gateway for a lease over NAT-PMP…"
+        );
+        assert_eq!(i18n.overview_port_keep(), "Keep a lease for this profile");
+        assert_eq!(
+            i18n.overview_port_system_preset(),
+            "System presets are not editable: a profile is created with the \"Add connection\" \
+             button."
+        );
+        assert_eq!(i18n.overview_port_refresh(), "Request again");
+        assert_eq!(i18n.overview_port_release(), "Release");
+        assert_eq!(
+            i18n.overview_port_provenance(),
+            "The port comes from a NAT-PMP lease at 10.2.0.1:5351 (RFC 6886), and only when the \
+             selected connection asks for it — port forwarding is part of a profile. An opcode 0 \
+             is sent first: if the gateway does not answer, no port is shown."
+        );
+    }
+
+    /// The messages that carry data. Our words around it are translated and the data is pasted in
+    /// untouched — a server name, a location, a connection's name and a lease's seconds.
+    #[test]
+    fn data_is_passed_through_and_never_paraphrased() {
+        let i18n = english();
+        assert_eq!(
+            i18n.overview_status_connected("NL#818", "Amsterdam, Netherlands"),
+            "NL#818 in Amsterdam, Netherlands"
+        );
+        assert_eq!(
+            i18n.overview_age_and_target("updated 3 mins ago", "Secure Core"),
+            "updated 3 mins ago · connection: Secure Core"
+        );
+        assert_eq!(
+            i18n.overview_port_lease(3600),
+            "lease 3600 s, renewed automatically"
+        );
+    }
 }

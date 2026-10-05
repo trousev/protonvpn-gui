@@ -133,8 +133,11 @@ pub fn card<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
         .into()
 }
 
-/// One of the four facts under the connection status: `СЕРВЕР / NL#818`.
-pub fn tile<'a, M: 'a>(label: &'a str, value: impl Into<String>) -> Element<'a, M> {
+/// One of the four facts under the connection status: `СЕРВЕР / NL#818`. The label is taken by
+/// value because it comes from the catalogue: a message is formatted per frame, so it cannot be a
+/// `&'a str` borrowed for as long as the element lives.
+pub fn tile<'a, M: 'a>(label: impl Into<String>, value: impl Into<String>) -> Element<'a, M> {
+    let label = label.into();
     container(
         column![
             text(label.to_uppercase())
@@ -152,11 +155,13 @@ pub fn tile<'a, M: 'a>(label: &'a str, value: impl Into<String>) -> Element<'a, 
     .into()
 }
 
-/// `label ......... value`, as the egress probe card reads.
-pub fn fact_row<'a, M: 'a>(label: &'a str, value: impl Into<String>) -> Element<'a, M> {
+/// `label ......... value`, as the egress probe card reads. As in [`tile`], the label is owned: it
+/// is a catalogue string, and the element outlives the frame that formatted it.
+pub fn fact_row<'a, M: 'a>(label: impl Into<String>, value: impl Into<String>) -> Element<'a, M> {
+    let label = label.into();
     let value = value.into();
     row![
-        text(label.to_string())
+        text(label)
             .size(13)
             .width(Length::Fill)
             .style(|_: &Theme| text::Style {

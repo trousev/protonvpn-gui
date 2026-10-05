@@ -20,9 +20,9 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
         row![
             button(
                 text(if app.console_expanded {
-                    "Свернуть"
+                    app.i18n.console_collapse()
                 } else {
-                    "Транскрипт"
+                    app.i18n.console_transcript()
                 })
                 .size(12)
             )
@@ -41,13 +41,13 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .height(Length::Fixed(1.0)),
             if busy {
-                button(text("Прервать").size(12))
+                button(text(app.i18n.console_cancel()).size(12))
                     .padding(Padding::from([3, 9]))
                     .style(theme::outlined(theme::BORDER, theme::DANGER))
                     .on_press(Message::CancelRun)
                     .into()
             } else {
-                widgets::eyebrow("консоль только для чтения")
+                widgets::eyebrow(app.i18n.console_read_only())
             },
         ]
         .spacing(8)
@@ -69,15 +69,15 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
 
     let controls = container(
         row![
-            widgets::faint("транскрипт · вывод CLI показан дословно"),
+            widgets::faint(app.i18n.console_transcript_caption()),
             iced::widget::Space::new()
                 .width(Length::Fill)
                 .height(Length::Fixed(1.0)),
-            button(text("Вниз").size(12))
+            button(text(app.i18n.console_bottom()).size(12))
                 .padding(Padding::from([4, 10]))
                 .style(theme::outlined(theme::BORDER, theme::TEXT_MUTED))
                 .on_press(Message::ScrollToBottom),
-            button(text("Копировать всё").size(12))
+            button(text(app.i18n.console_copy_all()).size(12))
                 .padding(Padding::from([4, 10]))
                 .style(theme::outlined(theme::BORDER, theme::TEXT))
                 .on_press(Message::CopyAll),
@@ -90,15 +90,13 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
 
     let mut list = column![].spacing(6);
     if app.console.dropped_invocations > 0 {
-        list = list.push(widgets::faint(format!(
-            "… {} более ранних вызовов вытеснено из буфера",
-            app.console.dropped_invocations
-        )));
+        list = list.push(widgets::faint(
+            app.i18n
+                .console_dropped(app.console.dropped_invocations as i64),
+        ));
     }
     if app.console.is_empty() {
-        list = list.push(widgets::faint(
-            "Пока ничего не запускалось. Каждая команда появится здесь дословно.",
-        ));
+        list = list.push(widgets::faint(app.i18n.console_empty()));
     }
     for block in &app.console.blocks {
         list = list.push(block_view(app, block));
@@ -122,13 +120,13 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn block_view<'a>(_app: &'a App, block: &'a crate::console::Block) -> Element<'a, Message> {
+fn block_view<'a>(app: &'a App, block: &'a crate::console::Block) -> Element<'a, Message> {
     let header = row![
         text(format!("$ {}", block.command))
             .font(Font::MONOSPACE)
             .size(12)
             .width(Length::Fill),
-        button(text("Копировать").size(11))
+        button(text(app.i18n.console_copy()).size(11))
             .padding(Padding::from([2, 8]))
             .style(theme::ghost(theme::TEXT_FAINT, false))
             .on_press(Message::CopyInvocation(block.id)),
@@ -138,10 +136,9 @@ fn block_view<'a>(_app: &'a App, block: &'a crate::console::Block) -> Element<'a
 
     let mut body = column![header].spacing(2);
     if block.lines_hidden > 0 {
-        body = body.push(widgets::faint(format!(
-            "… {} строк скрыто (лимит показа)",
-            block.lines_hidden
-        )));
+        body = body.push(widgets::faint(
+            app.i18n.console_lines_hidden(block.lines_hidden as i64),
+        ));
     }
     if !block.output.is_empty() {
         body = body.push(
@@ -177,4 +174,115 @@ fn block_view<'a>(_app: &'a App, block: &'a crate::console::Block) -> Element<'a
             ..container::Style::default()
         })
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use protonvpn_core::i18n::{I18n, Locale};
+
+    fn english() -> I18n {
+        I18n::new(Locale::SOURCE)
+    }
+
+    /// How many different sentence *shapes* a set of counts produces, the digits removed. The
+    /// number is in every sentence, so only the words around it can distinguish CLDR's categories;
+    /// counting the shapes is how "English has two forms, Russian has three" becomes a test.
+    fn shapes(texts: [String; 6]) -> usize {
+        let mut seen: Vec<String> = Vec::new();
+        for text in texts {
+            let shape: String = text.chars().filter(|c| !c.is_ascii_digit()).collect();
+            if !seen.contains(&shape) {
+                seen.push(shape);
+            }
+        }
+        seen.len()
+    }
+
+    /// Tests run in the source language, so this is the wording the pane actually draws. Pinning it
+    /// here means a change to the catalogue has to be a decision made twice.
+    #[test]
+    fn the_console_wording_is_the_catalogue() {
+        let i18n = english();
+        assert_eq!(i18n.console_collapse(), "Collapse");
+        assert_eq!(i18n.console_transcript(), "Transcript");
+        assert_eq!(i18n.console_cancel(), "Cancel");
+        assert_eq!(i18n.console_read_only(), "console is read-only");
+        assert_eq!(
+            i18n.console_transcript_caption(),
+            "transcript · the CLI's output is shown verbatim"
+        );
+        assert_eq!(i18n.console_bottom(), "Bottom");
+        assert_eq!(i18n.console_copy_all(), "Copy all");
+        assert_eq!(i18n.console_copy(), "Copy");
+        assert_eq!(
+            i18n.console_empty(),
+            "Nothing has run yet. Every command will appear here verbatim."
+        );
+    }
+
+    /// The two counts in this pane are plural selections, and English has two forms where Russian
+    /// has three. A bare `{ $count }` would render as a string in Russian and silently stop
+    /// declining the noun, so the numbers go through the selection itself.
+    #[test]
+    fn the_counts_select_a_plural() {
+        let i18n = english();
+        assert_eq!(
+            i18n.console_dropped(1),
+            "… 1 earlier invocation dropped from the buffer"
+        );
+        assert_eq!(
+            i18n.console_dropped(3),
+            "… 3 earlier invocations dropped from the buffer"
+        );
+        assert_eq!(
+            i18n.console_lines_hidden(1),
+            "… 1 line hidden (display limit)"
+        );
+        assert_eq!(
+            i18n.console_lines_hidden(50),
+            "… 50 lines hidden (display limit)"
+        );
+    }
+
+    /// The one test that is about Russian: the catalogue is built explicitly, because the pane
+    /// runs in the source language everywhere else. Russian selects on `[one]`, `[few]` and
+    /// `[many]`, and a translation that collapsed them into English's two forms would still
+    /// compile and still render — this is the only place that would notice. It asserts shapes
+    /// rather than sentences on purpose: no second copy of the wording to keep in step.
+    #[test]
+    fn russian_counts_in_more_than_two_forms() {
+        let russian = I18n::new(Locale::from_id("ru").unwrap());
+        let source = english();
+
+        for (one, few, many) in [(1, 3, 5), (21, 22, 25)] {
+            let forms = [one, few, many].map(|count| russian.console_dropped(count));
+            assert_ne!(forms[0], forms[1], "{one} and {few} read the same");
+            assert_ne!(forms[1], forms[2], "{few} and {many} read the same");
+            assert_ne!(forms[0], forms[2], "{one} and {many} read the same");
+            // The number itself survives into the sentence, and no `$count` is left raw.
+            for (count, text) in [one, few, many].into_iter().zip(&forms) {
+                assert!(text.contains(&count.to_string()), "{text}");
+                assert!(!text.contains("count"), "{text}");
+            }
+        }
+
+        // Two forms are where English stops; Russian does not. Over a set of counts that covers
+        // both languages' categories, English collapses to two sentences and Russian needs three —
+        // which is the whole reason a count is a selection and not a number pasted into a phrase.
+        let counts = [1, 3, 5, 21, 22, 25];
+        assert_eq!(shapes(counts.map(|count| source.console_dropped(count))), 2);
+        assert_eq!(
+            shapes(counts.map(|count| russian.console_dropped(count))),
+            3
+        );
+        assert_eq!(
+            shapes(counts.map(|count| russian.console_lines_hidden(count))),
+            3
+        );
+        assert_ne!(
+            russian.console_dropped(3),
+            source.console_dropped(3),
+            "the Russian catalogue is a translation, not a copy"
+        );
+    }
 }
