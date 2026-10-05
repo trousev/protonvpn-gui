@@ -11,20 +11,25 @@
 //! * the poll schedule — idle cadence, immediate read after a state-changing invocation,
 //!   attention-driven read,
 //! * the port-forwarding lease and its renewal timer,
-//! * secrets for `signin`, held in memory only, and only while the child is running.
+//! * secrets for `signin`, held in memory only, and only while the child is running,
+//! * the update state of an AppImage install (exception #4, §14) — the check and the download run
+//!   on threads of their own and report back here, exactly like the probe, because nothing about
+//!   them may block the commands the user is actually watching.
 //!
 //! The engine is deliberately GUI-free: it drives the tray through the [`TrayPresenter`] trait, so
 //! `protonvpn-core` still builds and works with no window and no toolkit.
 
 use std::collections::{HashMap, VecDeque};
+use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::config::{Config, ConfigStore};
+use crate::config::{Config, ConfigStore, UpdatePolicy};
 use crate::interpreter::{self, PromptKind};
 use crate::launcher::Intent;
 use crate::logbus::{InvocationKind, LogBus, LogEvent};
@@ -38,6 +43,7 @@ use crate::poll::PollSchedule;
 use crate::probe::{self, Probe, ProbeError};
 use crate::runner::{Job, Runner, RunnerEvent};
 use crate::socks5::{self, Closed, GateState, Reporter, Socks5, Socks5Event, Stats, TunnelGate};
+use crate::update::{self, Installed, Release, UpdateError, Version};
 
 /// Engine tick. Short enough that streamed output feels live, long enough to be free.
 pub const TICK: Duration = Duration::from_millis(100);
@@ -64,19 +70,45 @@ const DIAL_FAILURE_LIMIT: u32 = 2;
 /// How many consecutive unanswered background checks it takes before the same conclusion.
 const WATCH_FAILURE_LIMIT: u32 = 2;
 
+/// How long the updater waits after startup before its first look. Not a courtesy to the CLI —
+/// they share nothing — but to the person watching: the first `status` of a session and the window
+/// coming up are what they are waiting for, and a check that answers ten seconds later is just as
+/// useful.
+const UPDATE_STARTUP_DELAY: Duration = Duration::from_secs(10);
+
+/// The updater's idle cadence. A release is not a status: once a day is generous, and asking the
+/// release page costs one small file. `last_check` lives in the config, so restarting the
+/// application ten times a day does not mean ten checks.
+const UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// After a failed check. Longer than the status cadence, shorter than a day: a laptop that woke up
+/// without a network should not have to be restarted to learn about a release.
+const UPDATE_RETRY: Duration = Duration::from_secs(6 * 60 * 60);
+
 /// Wall-clock elapsed since `at`, saturating. A clock that jumps backwards is not a panic.
 fn since(at: SystemTime) -> Duration {
     SystemTime::now().duration_since(at).unwrap_or_default()
 }
 
-/// What the tray is told. The tray shows connection status and nothing else
-/// (`docs/architecture.md` §9).
+/// What the tray is told. The tray shows connection status and, when there is one, the fact that a
+/// release is waiting (`docs/architecture.md` §9, §14).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayView {
     pub status: ConnectionStatus,
     /// `NL#818 · Amsterdam, Netherlands` when connected.
     pub detail: Option<String>,
     pub age_text: String,
+    /// A release newer than this build, unless the user asked not to be told again. The tray is a
+    /// menu, not a notification system: the item is there to be found, never to interrupt.
+    pub update: Option<TrayUpdate>,
+}
+
+/// What the tray says about an update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayUpdate {
+    pub version: Version,
+    /// True once the image is in place and only a restart is missing.
+    pub applied: bool,
 }
 
 /// Implemented by the GUI crate; keeps `protonvpn-core` free of any toolkit.
@@ -97,6 +129,82 @@ pub enum ProbeTarget {
 
 /// The outcome of one `curl` run, carried back to the engine thread.
 pub type ProbeResult = Result<EgressReading, ProbeError>;
+
+/// What the updater is doing, as the views see it (exception #4, `docs/architecture.md` §14).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpdateView {
+    /// The version this build says it is, when it was built as a release at all.
+    pub current: Option<Version>,
+    /// The latest release, once a check has answered. Kept when a later check fails: what was
+    /// known is still known, and its age is what the view shows (§7).
+    pub latest: Option<Version>,
+    /// When the release page was last asked. A failure counts as an answer here — the age belongs
+    /// to the attempt, and the error says how it went.
+    pub checked_at: Option<SystemTime>,
+    /// How the last check or download ended, when it ended badly.
+    pub error: Option<String>,
+    pub phase: UpdatePhase,
+    /// Whether this build *can* replace itself: false for a tarball install or a `cargo run`.
+    pub replaceable: bool,
+    /// Whether the tray should mention the update, or the user asked not to be told about this
+    /// version again. A newer release clears it.
+    pub dismissed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum UpdatePhase {
+    #[default]
+    Idle,
+    Checking,
+    Downloading {
+        received: u64,
+        total: Option<u64>,
+    },
+    /// Downloaded and verified, waiting for whoever decides to put it in place.
+    Staged {
+        version: Version,
+    },
+    /// In place. The process still running is the old build; the next start is the new one.
+    Installed {
+        version: Version,
+    },
+}
+
+/// Reports from the updater's own threads. They travel on the same queue as everything else, so
+/// there is still exactly one thread that owns state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateEvent {
+    Checked {
+        started_at: SystemTime,
+        duration: Duration,
+        result: Result<Release, UpdateError>,
+    },
+    Progress {
+        received: u64,
+        total: Option<u64>,
+    },
+    Staged {
+        version: Version,
+        bytes: u64,
+        started_at: SystemTime,
+        duration: Duration,
+    },
+    Installed {
+        version: Version,
+        backup: Option<PathBuf>,
+        started_at: SystemTime,
+        duration: Duration,
+    },
+    Failed {
+        /// What failed, as the console should show it — spelled by the thread that ran it, from
+        /// the same arguments it passed.
+        display: String,
+        error: UpdateError,
+        started_at: SystemTime,
+        duration: Duration,
+    },
+    Cancelled,
+}
 
 /// Requests the views make of the engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +256,18 @@ pub enum Request {
         started_at: SystemTime,
         duration: Duration,
     },
+    /// Ask the release page what the latest version is. Works whatever the policy says: an
+    /// explicit request is consent, and a button that refuses to work would be a lie.
+    UpdateCheck,
+    /// Fetch the known release — if it is not already staged — and put it in place.
+    UpdateInstall,
+    /// Stop a download that is in flight. What is already on disk is deleted, not resumed: a
+    /// partly-verified image is not something to keep around.
+    UpdateCancel,
+    /// Do not mention this version in the tray again. A later release is mentioned again.
+    UpdateDismiss,
+    /// Internal: a report from the updater's own threads.
+    UpdateReport(UpdateEvent),
     Quit,
     Shutdown,
 }
@@ -184,6 +304,8 @@ pub struct Shared {
     /// Secrets are never published; this only says whether we are holding one.
     pub has_secrets: bool,
     pub socks5: Socks5View,
+    /// The AppImage updater (exception #4).
+    pub update: UpdateView,
 }
 
 /// The SOCKS5 proxy as the views see it: where it listens, the gate that decides whether anything
@@ -267,6 +389,20 @@ pub struct EngineOptions {
     /// How the kernel's route is read. Production always uses [`route::Kernel`]; the seam exists
     /// for the same reason `program` does, and nothing in the GUI ever sets it.
     pub route: Arc<dyn RouteProbe>,
+    /// What this build says it is, from `protonvpn-gui`'s build script. `None` for a build that
+    /// was not made as a release: it has nothing to compare itself with, and says so rather than
+    /// guessing in either direction.
+    pub version: Option<Version>,
+    /// argv[0] for the updater. `curl` in production, and a test seam for the same reason
+    /// `program` is one. Nothing else is ever run (exception #4).
+    pub curl: String,
+    /// The AppImage this process was started from, when it was one. `None` means there is nothing
+    /// here that may replace itself — a tarball install, a `cargo run` — and the updater then
+    /// reports what it finds without offering to install it.
+    pub installed: Option<Installed>,
+    /// How long the updater waits after startup before its first look. A test seam the way
+    /// `program` is one: the cadence itself is a number a test must not have to sleep through.
+    pub update_delay: Duration,
 }
 
 impl EngineOptions {
@@ -279,6 +415,10 @@ impl EngineOptions {
             tray: None,
             program: "protonvpn".to_string(),
             route: Arc::new(route::Kernel),
+            version: None,
+            curl: "curl".to_string(),
+            installed: Installed::detect(),
+            update_delay: UPDATE_STARTUP_DELAY,
         }
     }
 }
@@ -294,6 +434,14 @@ pub fn spawn(options: EngineOptions) -> EngineHandle {
     let socks5_stats = Arc::new(Stats::default());
     let gate = TunnelGate::new(Arc::clone(&options.route));
 
+    // Built before anything moves out of `options`: what this build is, and whether it is
+    // something that can replace itself at all.
+    let update = UpdateView {
+        current: options.version,
+        replaceable: options.installed.is_some(),
+        ..UpdateView::default()
+    };
+
     let shared = Arc::new(Mutex::new(Shared {
         state: AppState::default(),
         runner: RunnerStatus::Idle,
@@ -308,6 +456,7 @@ pub fn spawn(options: EngineOptions) -> EngineHandle {
             gate: gate.clone(),
             stats: Arc::clone(&socks5_stats),
         },
+        update: update.clone(),
     }));
     let bus = Arc::new(Mutex::new(LogBus::default()));
 
@@ -348,8 +497,16 @@ pub fn spawn(options: EngineOptions) -> EngineHandle {
         dial_failures: 0,
         probe_failures: 0,
         jobs: HashMap::new(),
+        version: update.current,
+        curl: options.curl,
+        installed: options.installed,
+        release: None,
+        update_job: UpdateJob::Idle,
+        update_cancel: Arc::new(AtomicBool::new(false)),
+        update,
+        next_update_check: Instant::now(),
+        update_delay: options.update_delay,
     };
-
     let finished_flag = Arc::clone(&finished);
     thread::Builder::new()
         .name("protonvpn-engine".into())
@@ -388,6 +545,19 @@ struct ActiveLease {
     external_ip: Option<std::net::IpAddr>,
     next_renewal: Instant,
     server: Option<String>,
+}
+
+/// What the updater is in the middle of. One job at a time, like the runner, so two clicks cannot
+/// start two downloads into the same staging file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateJob {
+    Idle,
+    Checking,
+    /// Downloading — and installing afterwards, when the policy or the user asked for the whole
+    /// thing at once.
+    Fetching {
+        install_after: bool,
+    },
 }
 
 struct Engine {
@@ -448,6 +618,24 @@ struct Engine {
     dial_failures: u32,
     probe_failures: u32,
     jobs: HashMap<InvocationId, SubmittedJob>,
+    /// What this build says it is; `None` when it was not built as a release.
+    version: Option<Version>,
+    /// The program the updater runs; `curl`, and a test seam like `program`.
+    curl: String,
+    /// The image we may replace, when this process is an AppImage at all.
+    installed: Option<Installed>,
+    /// The release the last check found, kept so an install does not have to ask again.
+    release: Option<Release>,
+    update_job: UpdateJob,
+    /// Set by `UpdateCancel` and read by the thread holding the transfer; reset when one starts.
+    update_cancel: Arc<AtomicBool>,
+    /// The updater's state, mirrored into `Shared` by [`Engine::publish_update`].
+    update: UpdateView,
+    /// When the next automatic check is due. Derived from `last_check` at startup, so a restart
+    /// does not mean a fresh check.
+    next_update_check: Instant,
+    /// How long after startup the first check waits; `UPDATE_STARTUP_DELAY` in production.
+    update_delay: Duration,
 }
 
 impl Engine {
@@ -470,6 +658,15 @@ impl Engine {
         self.sample_reference();
         self.reference_settle_until = Some(Instant::now() + REFERENCE_SETTLE);
         self.restart_socks5();
+
+        // The `.old` file a previous update left beside the image is deleted here and nowhere else:
+        // this process *is* the image that replaced it, so it started, so the copy is only disk
+        // space. The first update check is scheduled rather than taken now — see
+        // `UPDATE_STARTUP_DELAY`.
+        if let Some(installed) = self.installed.clone() {
+            update::discard_backup(&installed);
+        }
+        self.next_update_check = self.next_check_time();
 
         loop {
             self.drain_runner_events();
@@ -582,6 +779,35 @@ impl Engine {
             self.schedule.note_poll(now);
             self.submit(Intent::RefreshStatus);
         }
+
+        // The release page, on its own clock (§14). Never while another update job is running: one
+        // job at a time, and a timer that fires into a download would only start a second one.
+        if now >= self.next_update_check {
+            self.next_update_check = if self.update_busy() {
+                now + self.update_delay
+            } else {
+                now + UPDATE_INTERVAL
+            };
+            if self.config.update.policy != UpdatePolicy::Off && !self.update_busy() {
+                self.start_update_check();
+            }
+        }
+    }
+
+    /// When the next automatic check is due: a day after the last one, or a few seconds from now
+    /// when that is already in the past. Derived from the config so that restarting the application
+    /// five times in an afternoon does not mean asking the release page five times.
+    fn next_check_time(&self) -> Instant {
+        let now = Instant::now();
+        let Some(last) = self.config.update.last_check else {
+            return now + self.update_delay;
+        };
+
+        let due = SystemTime::UNIX_EPOCH + Duration::from_secs(last) + UPDATE_INTERVAL;
+        match due.duration_since(SystemTime::now()) {
+            Ok(left) => now + left.max(self.update_delay),
+            Err(_) => now + self.update_delay,
+        }
     }
 
     fn should_watch(&self) -> bool {
@@ -677,6 +903,11 @@ impl Engine {
                     self.judge_watch(answered);
                 }
             }
+            Request::UpdateCheck => self.start_update_check(),
+            Request::UpdateInstall => self.install_update(),
+            Request::UpdateCancel => self.cancel_update(),
+            Request::UpdateDismiss => self.dismiss_update(),
+            Request::UpdateReport(event) => self.react_to_update(event),
             Request::Quit | Request::Shutdown => {}
         }
     }
@@ -1132,6 +1363,7 @@ impl Engine {
     }
 
     fn publish_tray(&mut self) {
+        let update = tray_update(&self.update);
         let view = TrayView {
             status: self.state.connection.value.clone(),
             detail: match &self.state.connection.value {
@@ -1139,6 +1371,7 @@ impl Engine {
                 _ => None,
             },
             age_text: self.state.connection.age_text(),
+            update,
         };
         if self.tray_view.as_ref() == Some(&view) {
             return;
@@ -1173,6 +1406,8 @@ impl Engine {
 
     fn save_config(&mut self, config: Config) {
         let socks5_changed = config.socks5 != self.config.socks5;
+        let updater_switched_on = config.update.policy != UpdatePolicy::Off
+            && self.config.update.policy == UpdatePolicy::Off;
         match self.store.save(&config) {
             Ok(()) => {
                 self.config = config.clone();
@@ -1182,6 +1417,12 @@ impl Engine {
                 drop(shared);
                 if socks5_changed {
                     self.restart_socks5();
+                }
+                if updater_switched_on && !self.update_busy() {
+                    // Switching it on is a request to look, not an instruction to wait a day. The
+                    // check runs again and takes it from there — one extra small file, and one
+                    // code path instead of two.
+                    self.next_update_check = Instant::now() + UPDATE_STARTUP_DELAY;
                 }
             }
             Err(error) => self.note(&error.to_string()),
@@ -1799,6 +2040,347 @@ impl Engine {
         let mut shared = self.lock();
         shared.socks5.listen = listen;
     }
+
+    // --- the AppImage updater (exception #4) -----------------------------------------------
+
+    fn update_busy(&self) -> bool {
+        !matches!(self.update_job, UpdateJob::Idle)
+    }
+
+    /// Looks at the release page, on a thread of its own. Never on this one: `curl` takes as long
+    /// as the network takes, and this thread owns everything the views ask about — including
+    /// whether a `protonvpn` command is running. Nothing here waits for that thread.
+    fn start_update_check(&mut self) {
+        if self.update_busy() {
+            self.note("проверка обновлений уже идёт");
+            return;
+        }
+        self.update_job = UpdateJob::Checking;
+        self.update.phase = UpdatePhase::Checking;
+        self.publish_update();
+
+        let tx = self.tx.clone();
+        let curl = self.curl.clone();
+        thread::Builder::new()
+            .name("protonvpn-update-check".into())
+            .spawn(move || {
+                let started_at = SystemTime::now();
+                let result = update::latest(&curl);
+                let duration = since(started_at);
+                let _ = tx.send(Request::UpdateReport(UpdateEvent::Checked {
+                    started_at,
+                    duration,
+                    result,
+                }));
+            })
+            .ok();
+    }
+
+    /// Downloads the release and, when asked, puts it in place — both on one thread, because the
+    /// second half of that is a rename. [`update::fetch`] reuses a staged file that already hashes
+    /// right, so «Установить» after a download is a rename and not a second 70 MB.
+    fn start_update_fetch(&mut self, install_after: bool) {
+        if self.update_busy() {
+            return;
+        }
+        let (Some(installed), Some(release)) = (self.installed.clone(), self.release.clone())
+        else {
+            self.note(if self.installed.is_none() {
+                "эта сборка не AppImage — подменить себя не могу, обновление придётся скачать вручную"
+            } else {
+                "не знаю, что скачивать: сначала нужна проверка обновлений"
+            });
+            return;
+        };
+
+        self.update_cancel.store(false, Ordering::Relaxed);
+        self.update_job = UpdateJob::Fetching { install_after };
+        self.update.phase = UpdatePhase::Downloading {
+            received: 0,
+            total: None,
+        };
+        self.publish_update();
+
+        let tx = self.tx.clone();
+        let curl = self.curl.clone();
+        let cancel = Arc::clone(&self.update_cancel);
+
+        thread::Builder::new()
+            .name("protonvpn-update-fetch".into())
+            .spawn(move || {
+                let started_at = SystemTime::now();
+                let progress_tx = tx.clone();
+                let outcome = update::fetch(
+                    &curl,
+                    &installed,
+                    &release,
+                    &cancel,
+                    move |received, total| {
+                        let _ = progress_tx.send(Request::UpdateReport(UpdateEvent::Progress {
+                            received,
+                            total,
+                        }));
+                    },
+                );
+                let duration = since(started_at);
+                let display = update::describe_download_call(&release, &installed.staging_path());
+
+                let event = match outcome {
+                    Err(error) => UpdateEvent::Failed {
+                        display,
+                        error,
+                        started_at,
+                        duration,
+                    },
+                    Ok(staged) => {
+                        let bytes = fs::metadata(&staged).map(|meta| meta.len()).unwrap_or(0);
+                        if install_after {
+                            match update::install(&installed, &staged) {
+                                Ok(backup) => UpdateEvent::Installed {
+                                    version: release.version,
+                                    backup,
+                                    started_at,
+                                    duration,
+                                },
+                                Err(error) => UpdateEvent::Failed {
+                                    display: format!("обновление {}", release.version),
+                                    error,
+                                    started_at,
+                                    duration,
+                                },
+                            }
+                        } else {
+                            UpdateEvent::Staged {
+                                version: release.version,
+                                bytes,
+                                started_at,
+                                duration,
+                            }
+                        }
+                    }
+                };
+                let _ = tx.send(Request::UpdateReport(event));
+            })
+            .ok();
+    }
+
+    /// «Установить»: what is staged goes in place, and what is not gets downloaded first.
+    fn install_update(&mut self) {
+        if self.update_busy() {
+            return;
+        }
+        if let UpdatePhase::Installed { .. } = self.update.phase {
+            self.note("обновление уже на месте — оно заработает при следующем запуске");
+            return;
+        }
+        self.start_update_fetch(true);
+    }
+
+    fn cancel_update(&mut self) {
+        if !self.update_busy() {
+            return;
+        }
+        self.update_cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Stops the tray mentioning this version — not the same as forgetting it. The settings page
+    /// goes on saying what it knows, because hiding a notice is not hiding a fact.
+    fn dismiss_update(&mut self) {
+        let Some(version) = self.update.latest else {
+            return;
+        };
+        let mut config = self.config.clone();
+        config.update.dismissed = Some(version.tag());
+        self.save_config(config);
+        self.publish_update();
+    }
+
+    fn react_to_update(&mut self, event: UpdateEvent) {
+        match event {
+            UpdateEvent::Checked {
+                started_at,
+                duration,
+                result,
+            } => {
+                self.update_job = UpdateJob::Idle;
+                self.update.checked_at = Some(started_at + duration);
+                // The command the console shows is spelled from the same arguments that ran, so
+                // the transcript cannot drift from what happened (exception #4).
+                let command = update::describe_sums_call();
+
+                match result {
+                    Ok(release) => {
+                        self.update.error = None;
+                        self.update.latest = Some(release.version);
+                        self.update.phase = UpdatePhase::Idle;
+                        self.remember_check(Instant::now() + UPDATE_INTERVAL);
+                        self.record_note(
+                            command,
+                            vec![format!("последний релиз: {}", release.version)],
+                            started_at,
+                            duration,
+                        );
+
+                        let standing = update::standing(self.version, release.version);
+                        self.release = Some(release);
+                        match standing {
+                            update::Standing::Current => {}
+                            update::Standing::Unversioned => {
+                                self.note("эта сборка без версии — сравнивать не с чем");
+                            }
+                            update::Standing::Behind(version) => {
+                                if self.installed.is_none() {
+                                    self.note(&format!(
+                                        "доступна версия {version}, но эта сборка не AppImage — скачайте её вручную"
+                                    ));
+                                } else if matches!(
+                                    self.config.update.policy,
+                                    UpdatePolicy::Download | UpdatePolicy::Install
+                                ) {
+                                    let install =
+                                        self.config.update.policy == UpdatePolicy::Install;
+                                    self.start_update_fetch(install);
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.update.error = Some(error.to_string());
+                        self.update.phase = UpdatePhase::Idle;
+                        self.remember_check(Instant::now() + UPDATE_RETRY);
+                        self.record_note(command, vec![error.to_string()], started_at, duration);
+                    }
+                }
+                self.publish_update();
+            }
+            UpdateEvent::Progress { received, total } => {
+                self.update.phase = UpdatePhase::Downloading { received, total };
+                self.publish_update();
+            }
+            UpdateEvent::Staged {
+                version,
+                bytes,
+                started_at,
+                duration,
+            } => {
+                self.update_job = UpdateJob::Idle;
+                self.update.phase = UpdatePhase::Staged { version };
+                self.record_note(
+                    self.update_download_command(),
+                    vec![
+                        format!(
+                            "скачано {} , контрольная сумма совпала",
+                            update::human_bytes(bytes)
+                        ),
+                        format!("{version} ждёт установки: заработает после перезапуска"),
+                    ],
+                    started_at,
+                    duration,
+                );
+                self.publish_update();
+            }
+            UpdateEvent::Installed {
+                version,
+                backup,
+                started_at,
+                duration,
+            } => {
+                self.update_job = UpdateJob::Idle;
+                self.update.phase = UpdatePhase::Installed { version };
+                let mut lines = vec![format!("образ {version} занял место предыдущего")];
+                match &backup {
+                    Some(path) => lines.push(format!(
+                        "предыдущий оставлен как {} и будет удалён при следующем запуске",
+                        path.display()
+                    )),
+                    None => lines.push(
+                        "предыдущий сохранить не удалось — откатываться будет нечем".to_string(),
+                    ),
+                }
+                lines.push(
+                    "сейчас работает старый образ: новый заработает при следующем запуске"
+                        .to_string(),
+                );
+                self.record_note(format!("обновление {version}"), lines, started_at, duration);
+                self.publish_update();
+            }
+            UpdateEvent::Failed {
+                display,
+                error,
+                started_at,
+                duration,
+            } => {
+                let was_downloading = matches!(self.update.phase, UpdatePhase::Downloading { .. });
+                self.update_job = UpdateJob::Idle;
+                self.update.phase = UpdatePhase::Idle;
+                self.update.error = Some(error.to_string());
+                if was_downloading {
+                    // A transfer that died is worth a line; a check that could not answer already
+                    // has one, and the console is not a place for the same sentence twice.
+                    self.record_note(display, vec![error.to_string()], started_at, duration);
+                } else {
+                    self.note(&error.to_string());
+                }
+                self.publish_update();
+            }
+            UpdateEvent::Cancelled => {
+                self.update_job = UpdateJob::Idle;
+                self.update.phase = UpdatePhase::Idle;
+                self.note("загрузка обновления отменена");
+                self.publish_update();
+            }
+        }
+    }
+
+    /// Writes down that the release page was asked, and when to ask again. In the config rather
+    /// than in memory: a restart must not mean a fresh check every time the application is opened.
+    fn remember_check(&mut self, next: Instant) {
+        self.next_update_check = next;
+        let Ok(now) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) else {
+            return;
+        };
+        let mut config = self.config.clone();
+        config.update.last_check = Some(now.as_secs());
+        self.save_config(config);
+    }
+
+    /// The download, as the console shows it: the same arguments that actually ran.
+    fn update_download_command(&self) -> String {
+        match (&self.release, &self.installed) {
+            (Some(release), Some(installed)) => {
+                update::describe_download_call(release, &installed.staging_path())
+            }
+            _ => "curl (обновление)".to_string(),
+        }
+    }
+
+    fn publish_update(&mut self) {
+        self.update.dismissed = match (self.update.latest, self.config.update.dismissed.as_deref())
+        {
+            (Some(latest), Some(dismissed)) => latest.tag() == dismissed,
+            _ => false,
+        };
+        let view = self.update.clone();
+        self.lock().update = view;
+        // The tray shows the update too, so it is refreshed from the same place the view is.
+        self.publish_tray();
+    }
+}
+
+/// Whether the tray should mention an update, and what it should say.
+///
+/// Only when there is a release this build is behind — an unversioned build has nothing to be
+/// behind — and only until the user asks not to hear about it again. The tray is a menu, not a
+/// notification system: the item is there to be found, never to interrupt (`docs/architecture.md`
+/// §9, §14).
+fn tray_update(view: &UpdateView) -> Option<TrayUpdate> {
+    match (view.current, view.latest, view.dismissed) {
+        (Some(current), Some(latest), false) if current < latest => Some(TrayUpdate {
+            version: latest,
+            applied: matches!(view.phase, UpdatePhase::Installed { .. }),
+        }),
+        _ => None,
+    }
 }
 
 fn describe_reading(reading: &EgressReading) -> String {
@@ -1820,6 +2402,7 @@ mod tests {
     use crate::config::{Config, Socks5};
     use crate::model::ConnectTarget;
     use crate::net::route::ScriptedRoute;
+    use crate::update::testing::{image_bytes, stand_in, sums_for};
     use std::fs;
     use std::io::Write;
     use std::net::SocketAddrV4;
@@ -1919,6 +2502,13 @@ esac
             tray: None,
             program: program.to_string_lossy().into_owned(),
             route: Arc::clone(&route) as Arc<dyn RouteProbe>,
+            // Not a release, not an AppImage, and no automatic check inside a test's lifetime: a
+            // test must never reach the network. `start_updating` is the seam for the tests that
+            // do exercise the updater; they point it at a stand-in `curl` and a short delay.
+            version: None,
+            curl: "curl".to_string(),
+            installed: None,
+            update_delay: Duration::from_secs(3600),
         };
         spawn(options)
     }
@@ -2873,6 +3463,11 @@ esac
                 .to_string_lossy()
                 .into_owned(),
             route: Arc::clone(&test_route(LAN)) as Arc<dyn RouteProbe>,
+            // See `start_with`: the updater is not what this test is about.
+            version: None,
+            curl: "curl".to_string(),
+            installed: None,
+            update_delay: Duration::from_secs(3600),
         };
         let handle = spawn(options);
 
@@ -2893,5 +3488,348 @@ esac
             ConnectionStatus::Unknown
         );
         assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+    // --- the updater (exception #4) --------------------------------------------------------
+
+    /// An engine pointed at a stand-in `curl` and at an "installed" image in a temporary
+    /// directory. `$APPIMAGE` cannot be set for the test process from inside the test, so the
+    /// image is injected — the same seam `program` is for the CLI.
+    fn start_updating(
+        dir: &TempDir,
+        policy: UpdatePolicy,
+        version: Option<Version>,
+        installed: Option<Installed>,
+        curl: String,
+        delay: Duration,
+    ) -> EngineHandle {
+        let mut config = Config {
+            probe_enabled: false,
+            ..Default::default()
+        };
+        config.update.policy = policy;
+        let program = write_stand_in(dir.path());
+        let options = EngineOptions {
+            cwd: dir.path().to_path_buf(),
+            store: ConfigStore::at(dir.path().join("config.json")),
+            config,
+            tray_available: false,
+            tray: None,
+            program: program.to_string_lossy().into_owned(),
+            route: test_route(LAN) as Arc<dyn RouteProbe>,
+            version,
+            curl,
+            installed,
+            update_delay: delay,
+        };
+        spawn(options)
+    }
+
+    /// An installed image, a stand-in `curl` that serves a newer one, and the version this build
+    /// believes it is.
+    fn update_fixture(dir: &TempDir, name: &str) -> (Installed, String, Vec<u8>, Version, Vec<u8>) {
+        let old = image_bytes();
+        let path = dir.path().join(name);
+        fs::write(&path, &old).unwrap();
+        let installed = Installed::at(&path).unwrap();
+
+        let release = Version {
+            major: 0,
+            minor: 1,
+            patch: 21,
+        };
+        let new_bytes = [image_bytes(), b"the new one".to_vec()].concat();
+        let curl = stand_in(dir.path(), &sums_for(&new_bytes, release), &new_bytes);
+        (installed, curl, old, release, new_bytes)
+    }
+
+    fn release_0_1_21() -> Version {
+        Version {
+            major: 0,
+            minor: 1,
+            patch: 21,
+        }
+    }
+
+    fn release_0_1_20() -> Version {
+        Version {
+            major: 0,
+            minor: 1,
+            patch: 20,
+        }
+    }
+
+    #[test]
+    fn a_new_release_is_downloaded_and_waits_for_a_restart() {
+        let dir = TempDir::new("update-download");
+        let (installed, curl, old, release, _) =
+            update_fixture(&dir, "ProtonVPN-GUI-0.1.20-x86_64.AppImage");
+        let handle = start_updating(
+            &dir,
+            UpdatePolicy::Download,
+            Some(release_0_1_20()),
+            Some(installed.clone()),
+            curl,
+            Duration::from_millis(50),
+        );
+
+        let shared = wait_for(&handle, "the image to be staged", |shared| {
+            matches!(&shared.update.phase, UpdatePhase::Staged { version } if *version == release)
+        })
+        .unwrap();
+
+        // Staged, not installed: the file the user is running is the one they were running.
+        assert_eq!(fs::read(installed.path()).unwrap(), old);
+        assert!(installed.staging_path().is_file());
+        assert_eq!(shared.update.latest, Some(release));
+        assert_eq!(shared.update.current, Some(release_0_1_20()));
+        assert!(shared.update.error.is_none());
+        assert!(shared.update.checked_at.is_some());
+        assert!(shared.update.replaceable);
+
+        // What we ran is on the record, command and all.
+        let text = handle.bus().lock().unwrap().transcript();
+        assert!(
+            text.contains("releases/latest/download/SHA256SUMS"),
+            "{text}"
+        );
+        assert!(text.contains("последний релиз: 0.1.21"), "{text}");
+
+        // And that the release page was asked is written down, so the next start does not ask
+        // again a minute later.
+        let saved = ConfigStore::at(dir.path().join("config.json"))
+            .load()
+            .unwrap();
+        assert!(saved.update.last_check.is_some());
+
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn the_install_policy_puts_the_image_in_place_and_keeps_the_old_one() {
+        let dir = TempDir::new("update-install");
+        let (installed, curl, old, release, new) =
+            update_fixture(&dir, "ProtonVPN-GUI-0.1.20-x86_64.AppImage");
+        let handle = start_updating(
+            &dir,
+            UpdatePolicy::Install,
+            Some(release_0_1_20()),
+            Some(installed.clone()),
+            curl,
+            Duration::from_millis(50),
+        );
+
+        wait_for(
+            &handle,
+            "the image to be in place",
+            |shared| matches!(&shared.update.phase, UpdatePhase::Installed { version } if *version == release),
+        );
+
+        assert_eq!(fs::read(installed.path()).unwrap(), new);
+        // The way back, kept for one start.
+        assert_eq!(fs::read(installed.backup_path()).unwrap(), old);
+        assert!(!installed.staging_path().exists());
+
+        let text = handle.bus().lock().unwrap().transcript();
+        assert!(text.contains("заработает при следующем запуске"), "{text}");
+
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn the_notify_policy_reports_the_release_and_downloads_nothing() {
+        let dir = TempDir::new("update-notify");
+        let (installed, curl, old, release, _) =
+            update_fixture(&dir, "ProtonVPN-GUI-0.1.20-x86_64.AppImage");
+        let handle = start_updating(
+            &dir,
+            UpdatePolicy::Notify,
+            Some(release_0_1_20()),
+            Some(installed.clone()),
+            curl,
+            Duration::from_millis(50),
+        );
+
+        let shared = wait_for(&handle, "the release to be known", |shared| {
+            shared.update.latest == Some(release)
+                && matches!(shared.update.phase, UpdatePhase::Idle)
+        })
+        .unwrap();
+
+        assert!(shared.update.error.is_none());
+        assert!(!installed.staging_path().exists());
+        assert_eq!(fs::read(installed.path()).unwrap(), old);
+
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_build_that_cannot_replace_itself_says_so_instead_of_downloading() {
+        let dir = TempDir::new("update-not-an-appimage");
+        let (_, curl, _, release, _) = update_fixture(&dir, "unused.AppImage");
+        let handle = start_updating(
+            &dir,
+            UpdatePolicy::Install,
+            Some(release_0_1_20()),
+            None,
+            curl,
+            Duration::from_millis(50),
+        );
+
+        let shared = wait_for(&handle, "the release to be known", |shared| {
+            shared.update.latest == Some(release)
+        })
+        .unwrap();
+
+        assert!(!shared.update.replaceable);
+        assert!(matches!(shared.update.phase, UpdatePhase::Idle));
+        // Not a console line: nothing was executed. Our own remark, which is what a note is for.
+        let note = shared.note.clone().unwrap_or_default();
+        assert!(note.contains("не AppImage"), "{note}");
+
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn the_off_policy_asks_nothing_until_a_human_asks_for_it() {
+        let dir = TempDir::new("update-off");
+        let (installed, curl, old, release, _) =
+            update_fixture(&dir, "ProtonVPN-GUI-0.1.20-x86_64.AppImage");
+        let handle = start_updating(
+            &dir,
+            UpdatePolicy::Off,
+            Some(release_0_1_20()),
+            Some(installed.clone()),
+            curl,
+            Duration::from_millis(20),
+        );
+
+        // Well past the delay it would have fired at, and nothing happened.
+        thread::sleep(Duration::from_millis(400));
+        let quiet = handle.snapshot();
+        assert!(quiet.update.latest.is_none());
+        assert!(quiet.update.checked_at.is_none());
+
+        // The button, however, is an explicit request: an off switch that refuses to work when
+        // asked by hand would be a lie.
+        handle.send(Request::UpdateCheck);
+        let shared = wait_for(&handle, "a manual check", |shared| {
+            shared.update.latest == Some(release)
+        })
+        .unwrap();
+
+        // …and it reports without installing: the policy still decides what may be fetched.
+        assert!(matches!(shared.update.phase, UpdatePhase::Idle));
+        assert!(!installed.staging_path().exists());
+        assert_eq!(fs::read(installed.path()).unwrap(), old);
+
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_dismissed_version_is_written_down_and_a_newer_one_is_offered_again() {
+        let dir = TempDir::new("update-dismiss");
+        let (installed, curl, _, release, _) =
+            update_fixture(&dir, "ProtonVPN-GUI-0.1.20-x86_64.AppImage");
+        let handle = start_updating(
+            &dir,
+            UpdatePolicy::Notify,
+            Some(release_0_1_20()),
+            Some(installed),
+            curl,
+            Duration::from_millis(50),
+        );
+        wait_for(&handle, "the release to be known", |shared| {
+            shared.update.latest == Some(release)
+        });
+
+        handle.send(Request::UpdateDismiss);
+        wait_for(&handle, "the dismissal to be recorded", |shared| {
+            shared.update.dismissed
+        });
+
+        let saved = ConfigStore::at(dir.path().join("config.json"))
+            .load()
+            .unwrap();
+        assert_eq!(saved.update.dismissed.as_deref(), Some("0.1.21"));
+
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn the_tray_mentions_an_update_only_when_there_is_one_and_it_is_wanted() {
+        let view = |current: Option<Version>,
+                    latest: Option<Version>,
+                    dismissed: bool,
+                    phase: UpdatePhase| UpdateView {
+            current,
+            latest,
+            dismissed,
+            phase,
+            ..UpdateView::default()
+        };
+
+        assert_eq!(
+            tray_update(&view(
+                Some(release_0_1_20()),
+                Some(release_0_1_21()),
+                false,
+                UpdatePhase::Idle
+            ))
+            .map(|update| update.version),
+            Some(release_0_1_21())
+        );
+        assert!(
+            tray_update(&view(
+                Some(release_0_1_21()),
+                Some(release_0_1_21()),
+                false,
+                UpdatePhase::Idle
+            ))
+            .is_none(),
+            "up to date is not news"
+        );
+        assert!(
+            tray_update(&view(
+                Some(release_0_1_21()),
+                Some(release_0_1_20()),
+                false,
+                UpdatePhase::Idle
+            ))
+            .is_none(),
+            "a release behind this build is not an update"
+        );
+        assert!(
+            tray_update(&view(
+                None,
+                Some(release_0_1_21()),
+                false,
+                UpdatePhase::Idle
+            ))
+            .is_none(),
+            "an unversioned build has nothing to be behind"
+        );
+        assert!(
+            tray_update(&view(
+                Some(release_0_1_20()),
+                Some(release_0_1_21()),
+                true,
+                UpdatePhase::Idle
+            ))
+            .is_none(),
+            "a dismissal is a dismissal"
+        );
+        assert!(
+            tray_update(&view(
+                Some(release_0_1_20()),
+                Some(release_0_1_21()),
+                false,
+                UpdatePhase::Installed {
+                    version: release_0_1_21()
+                }
+            ))
+            .unwrap()
+            .applied,
+            "once it is in place, the tray says a restart is what is missing"
+        );
     }
 }

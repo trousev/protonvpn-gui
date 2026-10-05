@@ -292,36 +292,29 @@ pub fn fetch(
     mut progress: impl FnMut(u64, Option<u64>),
 ) -> Result<PathBuf, UpdateError> {
     installed.writable()?;
+    let staged = installed.staging_path();
+
+    // Already downloaded and verified? Then there is nothing to do: the transfer this function was
+    // about to make has already happened, and an application restarted between downloading and
+    // installing must not pay for it twice. The checksum is what makes trusting the file safe — it
+    // is exactly the proof this function exists to produce, and it comes from the release page, not
+    // from the file.
+    if staged.is_file() && verify(&staged, release).is_ok() {
+        let bytes = fs::metadata(&staged).map(|meta| meta.len()).unwrap_or(0);
+        progress(bytes, Some(bytes));
+        return Ok(staged);
+    }
 
     let url = release.url();
     let total = head_size(curl, &url);
-    let staged = installed.staging_path();
-
     progress(0, total);
     download(curl, &url, &staged, cancel, |received| {
         progress(received, total)
     })?;
 
-    // What makes the download evidence rather than hope. It proves the bytes are the ones this
-    // release published a checksum for, over the same connection the checksum came from — which is
-    // worth having against a truncated file, a proxy, or a mirror serving yesterday's image. It is
-    // not proof of authorship, and `SECURITY.md` says so in those words.
-    let got = sha256_file(&staged)?;
-    if !got.eq_ignore_ascii_case(&release.sha256) {
+    if let Err(error) = verify(&staged, release) {
         let _ = fs::remove_file(&staged);
-        return Err(UpdateError::ChecksumMismatch {
-            expected: release.sha256.clone(),
-            got,
-        });
-    }
-
-    // A correct hash of the wrong document is a real thing: an error page behind a captive portal
-    // would still agree with a checksum file served from the same portal, and is caught here by
-    // simply not being an AppImage.
-    let head = read_head(&staged, 12)?;
-    if !looks_like_appimage(&head) {
-        let _ = fs::remove_file(&staged);
-        return Err(UpdateError::NotAnAppImage(describe_head(&head)));
+        return Err(error);
     }
 
     make_executable(&staged, installed.path())?;
@@ -329,6 +322,31 @@ pub fn fetch(
     // in that window would leave a zero-length file where the application used to be.
     fsync(&staged)?;
     Ok(staged)
+}
+
+/// Whether these are the bytes the release published a checksum for, and an AppImage at all — the
+/// two things [`fetch`] promises about what it returns.
+///
+/// What the checksum is worth is spelled out where it belongs: it proves the download agrees with a
+/// document fetched over the same connection, which is worth having against a truncated file, a
+/// proxy, or a mirror serving yesterday's image. It is not proof of authorship — `SECURITY.md`.
+///
+/// The shape check is here because a correct hash of the wrong document is a real thing: an error
+/// page behind a captive portal agrees perfectly with a checksum file served from the same portal.
+fn verify(path: &Path, release: &Release) -> Result<(), UpdateError> {
+    let got = sha256_file(path)?;
+    if !got.eq_ignore_ascii_case(&release.sha256) {
+        return Err(UpdateError::ChecksumMismatch {
+            expected: release.sha256.clone(),
+            got,
+        });
+    }
+
+    let head = read_head(path, 12)?;
+    if !looks_like_appimage(&head) {
+        return Err(UpdateError::NotAnAppImage(describe_head(&head)));
+    }
+    Ok(())
 }
 
 /// Renames verified bytes over the installed image, keeping the old one as `<name>.old`.
@@ -452,6 +470,22 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// A byte count as a person reads it. One decimal is enough: the difference between 70.4 and
+/// 70.5 MiB tells nobody anything.
+pub fn human_bytes(bytes: u64) -> String {
+    const UNITS: [(&str, u64); 3] = [("МиБ", 1024 * 1024), ("КиБ", 1024), ("Б", 1)];
+    for (unit, size) in UNITS {
+        if bytes >= size {
+            return if size == 1 {
+                format!("{bytes} {unit}")
+            } else {
+                format!("{:.1} {unit}", bytes as f64 / size as f64)
+            };
+        }
+    }
+    "0 Б".to_string()
+}
+
 // --- the invocations this module is allowed to make -------------------------------------------
 
 /// The flags every call shares. `--proto '=https'` and `--tlsv1.2` are not decoration: they are the
@@ -505,6 +539,34 @@ fn curl_text(curl: &str, url: &str) -> Result<String, UpdateError> {
         });
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The check, as the console shows it. Spelled from the same argument list that actually runs, so
+/// the transcript cannot drift from what was executed (§3).
+pub fn describe_sums_call() -> String {
+    describe(&sums_args(&sums_url()))
+}
+
+/// The download, as the console shows it.
+pub fn describe_download_call(release: &Release, dest: &Path) -> String {
+    describe(&download_args(&release.url(), dest))
+}
+
+fn describe(args: &[String]) -> String {
+    let mut line = String::from("curl");
+    for arg in args {
+        line.push(' ');
+        // Not shell quoting — this line is for reading, and a path with a space in it is the only
+        // thing that could make it ambiguous.
+        if arg.contains(' ') {
+            line.push('\'');
+            line.push_str(arg);
+            line.push('\'');
+        } else {
+            line.push_str(arg);
+        }
+    }
+    line
 }
 
 /// The asset's size, asked for before the download so progress can be a fraction. Best effort in
@@ -668,11 +730,13 @@ fn fsync(path: &Path) -> Result<(), UpdateError> {
         .map_err(|error| UpdateError::Io(format!("{}: {error}", path.display())))
 }
 
+/// Helpers shared with the engine's tests, which drive the same stand-in `curl` through
+/// `EngineOptions`.
 #[cfg(test)]
-mod tests {
+pub(crate) mod testing {
     use super::*;
 
-    fn temp_dir(name: &str) -> PathBuf {
+    pub(crate) fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "protonvpn-gui-update-{name}-{}",
             std::process::id()
@@ -683,13 +747,13 @@ mod tests {
     }
 
     /// A type-2 AppImage header and some bytes behind it.
-    fn image_bytes() -> Vec<u8> {
+    pub(crate) fn image_bytes() -> Vec<u8> {
         let mut bytes = b"\x7fELF\x02\x01\x01\x00AI\x02".to_vec();
         bytes.extend(std::iter::repeat_n(0u8, 64));
         bytes
     }
 
-    fn install_image(dir: &Path, name: &str, bytes: &[u8]) -> Installed {
+    pub(crate) fn install_image(dir: &Path, name: &str, bytes: &[u8]) -> Installed {
         let path = dir.join(name);
         fs::write(&path, bytes).unwrap();
         Installed::at(&path).unwrap()
@@ -698,7 +762,7 @@ mod tests {
     /// A stand-in for `curl`, the way the engine's tests drive a stand-in CLI through
     /// `EngineOptions::program`. It answers the three calls this module makes: the checksum file,
     /// a HEAD, and a download.
-    fn stand_in(dir: &Path, sums: &str, image: &[u8]) -> String {
+    pub(crate) fn stand_in(dir: &Path, sums: &str, image: &[u8]) -> String {
         fs::write(dir.join("sums"), sums).unwrap();
         fs::write(dir.join("image"), image).unwrap();
         let script = dir.join("curl");
@@ -732,7 +796,7 @@ cat "$here/sums"
         script.to_string_lossy().into_owned()
     }
 
-    fn sums_for(bytes: &[u8], version: Version) -> String {
+    pub(crate) fn sums_for(bytes: &[u8], version: Version) -> String {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
         format!(
@@ -742,6 +806,12 @@ cat "$here/sums"
             asset_name(version)
         )
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
 
     #[test]
     fn parses_the_version_shape_a_release_publishes() {
