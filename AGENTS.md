@@ -161,7 +161,10 @@ can only be checked by a real run.
 - **Wayland has no window icons.** The window's name and icon come from a `.desktop` file whose
   basename matches the window's app id, which is why the app installs one into
   `~/.local/share/{applications,icons/hicolor}` and why `desktop::entry()` and
-  `packaging/protonvpn-gui.desktop` are kept identical by a test (`docs/architecture.md` §12).
+  `packaging/protonvpn-gui.desktop` are kept identical by a test — `Exec` and `Icon` aside
+  (`docs/architecture.md` §12). The installed `Icon=` is an absolute path on purpose: an icon
+  *name* is a theme lookup, and GTK answers a lookup of the user's hicolor directory from a stale
+  `icon-theme.cache` that nothing rebuilds, which is how the gear comes back.
 
 ## Current state
 

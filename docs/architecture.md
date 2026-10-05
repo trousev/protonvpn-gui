@@ -479,7 +479,7 @@ Three files, all ours, all written where a desktop actually searches:
 | File | What it is |
 |---|---|
 | `~/.local/share/applications/protonvpn-gui.desktop` | the application: `Name`, `Icon`, `Categories`, `StartupWMClass` |
-| `~/.local/share/icons/hicolor/256x256/apps/protonvpn-gui.png` | the icon `Icon=` names — a file next to the binary is invisible to the shell |
+| `~/.local/share/icons/hicolor/256x256/apps/protonvpn-gui.png` | the icon `Icon=` points at — a file next to the binary is invisible to the shell |
 | `~/.config/autostart/protonvpn-gui.desktop` | autostart: the same entry plus `X-GNOME-Autostart-enabled=true` |
 
 Rules:
@@ -497,8 +497,24 @@ Rules:
    files and they stay gone. The same shape as autostart, for the same reason: a user who deletes
    the file should not be surprised by it coming back unasked.
 4. **One template, checked.** `packaging/protonvpn-gui.desktop` is what the AppImage ships and
-   `desktop::entry()` is what the app installs; a test compares every key but `Exec`, so the menu
-   entry and the window cannot end up branded differently.
+   `desktop::entry()` is what the app installs; a test compares every key but `Exec` and `Icon`,
+   so the menu entry and the window cannot end up branded differently. The two keys it lets
+   differ are the two a package cannot know: where the program will live, and where the user's
+   home is.
+5. **`Icon=` is an absolute path, not an icon name.** A name is a theme lookup, and a lookup of
+   `~/.local/share/icons/hicolor` is answered out of that directory's `icon-theme.cache` if one is
+   there — a file listing that nothing rebuilds when a file appears underneath it. Measured on the
+   maintainer's machine: `icon-theme.cache` dated 2026-09-27, our PNG written by the app on
+   2026-10-05, and `Gtk.IconTheme.has_icon("protonvpn-gui")` **false** in a fresh GTK 3 and a
+   fresh GTK 4 process, while `steam.png` and the `chrome-*Default` icons in the same directory
+   resolved because they predate the cache; deleting or rebuilding the cache made ours resolve
+   too — which is what GNOME Shell 50 was showing as the gear, for an app whose entry it had
+   already found by name. A path is read directly (`GFileIcon`, not `GThemedIcon`), needs no
+   theme, no cache and no cooperation, and is what the entry spec reserves absolute values for.
+   The file stays in the hicolor directory: that is where a healthy theme finds it by name, for
+   the packaged entry and for anyone else who looks, and the path points at those same bytes.
+   The key's escaping is not `Exec`'s — no quoting, and only `\` and control characters are
+   written the long way.
 
 ### 12.1 Why iced is pinned at 0.14 and not 0.13
 
