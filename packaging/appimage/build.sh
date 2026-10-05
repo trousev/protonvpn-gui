@@ -21,6 +21,9 @@
 #   packaging/appimage/build.sh              # build, using ./tools for the pinned tools
 #   ARCH=aarch64 packaging/appimage/build.sh # cross-arch (needs an aarch64 sysroot to build)
 #
+# The version comes from `scripts/version.sh` (the same one `scripts/release.sh` publishes under)
+# unless `PROTONVPN_GUI_VERSION` is set, which is how a caller can name it without a git checkout.
+#
 # Requirements: a release build of the workspace, `curl` to fetch the tools the first time,
 # `sha256sum` to verify them.
 
@@ -33,6 +36,18 @@ ARCH="${ARCH:-$(uname -m)}"
 TOOLS="$REPO_ROOT/tools"
 APPDIR="$REPO_ROOT/target/appimage/ProtonVPNGUI.AppDir"
 OUT_DIR="$REPO_ROOT/target/appimage"
+
+# The version this build reports about itself: baked into the binary by `crates/protonvpn-gui`'s
+# build script and written into the image's name. An installed AppImage compares that number against
+# `releases/latest` to decide whether to update, so it is not decoration — and it has to be the
+# number `scripts/release.sh` publishes the release under, which is why both ask
+# `scripts/version.sh` rather than computing it themselves.
+VERSION="${PROTONVPN_GUI_VERSION:-$("$REPO_ROOT/scripts/version.sh")}"
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "error: PROTONVPN_GUI_VERSION must look like X.Y.N, got '$VERSION'" >&2
+    exit 2
+fi
+export PROTONVPN_GUI_VERSION="$VERSION"
 
 # The directories the pinned tools are allowed to search. Deliberately explicit rather than
 # inherited: linuxdeploy aborts if any `$PATH` entry cannot be listed — a root-only container
@@ -106,7 +121,7 @@ fetch_verified \
     "$TOOLS/runtime-$ARCH" \
     "$RUNTIME_SHA256"
 
-echo "== release build =="
+echo "== release build $VERSION =="
 cargo build --release -p protonvpn-gui --locked
 
 echo "== staging AppDir =="
@@ -132,7 +147,7 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 # Override the plugin's bundled runtime with the pinned one, so the runtime that ships in the
 # AppImage is the version named above and not whatever the plugin happened to be built with.
 export LDAI_RUNTIME_FILE="$TOOLS/runtime-$ARCH"
-export OUTPUT="$OUT_DIR/ProtonVPN-GUI-$ARCH.AppImage"
+export OUTPUT="$OUT_DIR/ProtonVPN-GUI-$VERSION-$ARCH.AppImage"
 
 PATH="$TOOL_PATH" "$TOOLS/linuxdeploy-$ARCH.AppImage" \
     --appimage-extract-and-run \

@@ -17,9 +17,14 @@ to each release:
 **AppImage** — nothing to install:
 
 ```sh
-chmod +x ProtonVPN-GUI-x86_64.AppImage
-./ProtonVPN-GUI-x86_64.AppImage
+chmod +x ProtonVPN-GUI-<version>-x86_64.AppImage
+./ProtonVPN-GUI-<version>-x86_64.AppImage
 ```
+
+The image carries its version in its name and in its bytes (`--version` prints it), which is what
+lets it update itself: it compares that number against the latest release, and can fetch and verify
+a newer image and rename it over itself. Nothing is executed until you start it again, and the file
+it replaces is kept next to it as `<name>.old` for one start.
 
 **Tarball** — the same binary, plus the `.desktop` entry, icon, README and LICENSE:
 
