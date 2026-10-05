@@ -11,6 +11,11 @@ repository.workspace = true
 portable-pty.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# SHA-256 of a downloaded AppImage, checked against the `SHA256SUMS` published with it. A hash is
+# the one thing here that must not be hand-rolled to save four crates: the failure mode of getting
+# it subtly wrong is silent, and it is the check the whole update path rests on. RustCrypto's
+# implementation, no features beyond the default.
+sha2 = "0.10"
 
 [[bin]]
 name = "capture-fixtures"

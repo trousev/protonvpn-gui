@@ -23,12 +23,16 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# The Linux closure: 195 crates as of the iced 0.14 upgrade. That upgrade dropped 29 crates —
-# among them `png` with `flate2`/`miniz_oxide`, `palette`, `rayon` and the `drm` family — and added
-# 6 (`harfrust`, `core_maths`, `iced_debug`, `iced_program`, `lilt`,
-# `linebender_resource_handle`); iced's unused `advanced` feature is off as well. Raise this only
+# The Linux closure: 202 crates as of the AppImage updater. That feature added 7 — `sha2` with
+# `digest`, `block-buffer`, `crypto-common`, `generic-array`, `typenum` and `cpufeatures` — because
+# the updater checks a downloaded image against the `SHA256SUMS` published with it, and a hash is the
+# wrong thing to hand-roll: a subtly wrong implementation fails silently, and this check is what the
+# whole update path rests on. RustCrypto's crate, default features, nothing else pulled in.
+# Before that: 195 after the iced 0.14 upgrade, which dropped 29 crates — among them `png` with
+# `flate2`/`miniz_oxide`, `palette`, `rayon` and the `drm` family — and added 6 (`harfrust`,
+# `core_maths`, `iced_debug`, `iced_program`, `lilt`, `linebender_resource_handle`). Raise this only
 # with the reason in the commit message.
-MAX_CRATES=195
+MAX_CRATES=202
 
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 if [[ -z "$HOST_TRIPLE" ]]; then
