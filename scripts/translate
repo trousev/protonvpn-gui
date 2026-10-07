@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""Translate the missing strings in the message catalogue, using an LLM.
+
+The catalogue lives in `crates/protonvpn-core/i18n/` — one directory per language, English first.
+English is the source of truth: a message exists because it is written there, with a developer
+comment above it saying where it appears and how much room it has. This script walks every other
+locale, works out what is missing, and asks a model to translate exactly that and nothing else.
+
+Why a script rather than "just ask the assistant": a translation must be *evidence*, not a claim.
+`crates/protonvpn-core/build.rs` already refuses to compile a locale that is short a message, a
+file or a `$variable`; this script produces something that has to survive that, and it runs the
+same check itself at the end so a bad batch never reaches a commit unnoticed.
+
+Usage
+    scripts/translate                 # fill in every gap, then verify the build
+    scripts/translate --locale ru     # one language only
+    scripts/translate --dry-run       # say what is missing, call nothing
+    scripts/translate --check         # exit 1 if anything is missing; call nothing
+
+Environment
+    OPENAI_API_KEY    required. Read, never written anywhere, never printed.
+    TRANSLATE_MODEL   default `gpt5-terra`.
+    OPENAI_BASE_URL   default `https://api.openai.com/v1` (a local mock is useful in tests).
+
+Token economy, since translation is billed per character of *context* as much as per word:
+
+  * only missing messages are sent — never the whole catalogue;
+  * one request per language, not one per string;
+  * the context comment is sent, because it is the one thing the model cannot infer, and nothing
+    else about the application is;
+  * a handful of already-translated strings go along as a style sample, so the voice matches
+    without shipping the entire file as a prompt;
+  * the response is a JSON schema, so there is no prose to strip and no retry loop to pay for.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+CATALOGUE = REPO / "crates" / "protonvpn-core" / "i18n"
+SOURCE = "en"
+DEFAULT_MODEL = "gpt5-terra"
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
+# A message id is the one thing `build.rs` also insists on; keeping the two in step costs nothing.
+ID = re.compile(r"^([a-z0-9][a-z0-9-]*)\s*=")
+VARIABLE = re.compile(r"\$\s*([A-Za-z][A-Za-z0-9_]*)")
+
+# How many already-translated strings to send as a style sample. Enough to fix the register, few
+# enough that it is noise next to the messages actually being translated.
+STYLE_SAMPLES = 5
+
+SYSTEM = """\
+You translate the user interface of ProtonVPN GUI, a Linux desktop application that wraps the
+`protonvpn` command-line client. It is a console-first tool: it shows the user exactly which
+command it ran and exactly what came back.
+
+The translations are Project Fluent messages. Rules you must follow:
+
+1. Translate the *value* only. Never change, add or remove a `{ $variable }` or a `NUMBER($n)`
+   placeable, and never translate the text inside one — it is substituted at run time.
+2. A plural selection is a list of cases. Give the target language its own cases rather than
+   copying English's: use the CLDR categories that language actually has. Keep the `*` on the
+   default case, and keep every variable the English uses.
+3. Data is never translated: a server name, a country, a city, an IP address, a port, a version, a
+   path, a URL, an exit code, a command line, a configuration key or value, and the product names
+   Proton, ProtonVPN, Secure Core, Tor, P2P, NetShield, Kill switch, VPN Accelerator, Moderate
+   NAT, IPv6. Write them back exactly as they arrived.
+4. The voice is dry, exact and calm. It explains what is true and how it is known; it never
+   advertises, never apologises, never says "Oops", and never uses an exclamation mark. Where the
+   application admits a limit — stale state, a proxy that refuses to relay, an update that needs a
+   restart — the translation has to admit it just as plainly.
+5. Keep it short. Many of these strings are labels in a row or a narrow column; the comment says
+   when that is the case.
+6. Use the developer comment as context: it says where the string appears and what it is for. If
+   the comment says a word must be left alone, leave it alone.
+"""
+
+RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "translations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "text": {"type": "string"},
+                },
+                "required": ["id", "text"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["translations"],
+    "additionalProperties": False,
+}
+
+
+class Message:
+    """One message, as a locale declares it."""
+
+    def __init__(self, file: str, id: str, comment: list[str], value: str):
+        self.file = file
+        self.id = id
+        self.comment = comment
+        self.value = value
+
+    @property
+    def variables(self) -> set[str]:
+        return set(VARIABLE.findall(self.value))
+
+    @property
+    def is_select(self) -> bool:
+        return "->" in self.value
+
+
+def parse(path: Path) -> dict[str, Message]:
+    """Read one `.ftl` file.
+
+    A deliberately small reader rather than a Fluent parser: this script has to read the two
+    things a translation needs — the value and the comment above it — and nothing else. The
+    authoritative parse is `build.rs`, which runs on every build and is the one that decides
+    whether a catalogue is well formed.
+    """
+    messages: dict[str, Message] = {}
+    comment: list[str] = []
+    current: Message | None = None
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = ID.match(line)
+        if match:
+            current = Message(path.stem, match.group(1), comment, line.split("=", 1)[1].strip())
+            messages[current.id] = current
+            comment = []
+            continue
+        if line.startswith("#"):
+            if current is None:
+                comment.append(line.lstrip("#").strip())
+            continue
+        if not line.strip():
+            # A blank line ends a message and, if no message is open, the comment block above it.
+            if current is None:
+                comment = []
+            current = None
+            continue
+        if current is not None:
+            # Continuation lines keep their layout: a plural selection is only valid FTL when its
+            # cases are on separate lines, and the model is shown the message exactly as it is
+            # written so that it can keep the shape it is translating into.
+            current.value += "\n" + line
+
+    return messages
+
+
+def locales() -> list[str]:
+    if not CATALOGUE.is_dir():
+        sys.exit(f"error: no catalogue at {CATALOGUE}")
+    found = sorted(entry.name for entry in CATALOGUE.iterdir() if entry.is_dir())
+    if SOURCE not in found:
+        sys.exit(f"error: {CATALOGUE / SOURCE} is missing — it is the source language")
+    return found
+
+
+def read_source() -> dict[str, Message]:
+    messages: dict[str, Message] = {}
+    for path in sorted((CATALOGUE / SOURCE).glob("*.ftl")):
+        messages.update(parse(path))
+    return messages
+
+
+def missing(locale: str, source: dict[str, Message]) -> dict[str, Message]:
+    """What this locale still owes English: whole files, new ids, and lost variables."""
+    directory = CATALOGUE / locale
+    have: dict[str, Message] = {}
+    for path in sorted(directory.glob("*.ftl")):
+        have.update(parse(path))
+
+    owed: dict[str, Message] = {}
+    for id, message in source.items():
+        translated = have.get(id)
+        if translated is None or translated.variables != message.variables:
+            owed[id] = message
+    return owed
+
+
+def style_samples(locale: str, source: dict[str, Message], owed: dict[str, Message]) -> list[dict]:
+    """A few strings this locale already has, so the request carries the voice and not just rules."""
+    samples = []
+    for path in sorted((CATALOGUE / locale).glob("*.ftl")):
+        for id, message in parse(path).items():
+            if id in owed or id not in source:
+                continue
+            samples.append({"english": source[id].value, "translated": message.value})
+            if len(samples) >= STYLE_SAMPLES:
+                return samples
+    return samples
+
+
+def ask(locale: str, owed: dict[str, Message], samples: list[dict], model: str, base_url: str) -> dict[str, str]:
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "target_language": locale,
+                        "style_samples": samples,
+                        "messages": [
+                            {
+                                "id": message.id,
+                                "english": message.value,
+                                "comment": " ".join(message.comment),
+                            }
+                            for message in owed.values()
+                        ],
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "translations",
+                "strict": True,
+                "schema": RESPONSE_SCHEMA,
+            },
+        },
+    }
+
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=600) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")[:2000]
+        sys.exit(f"error: {locale}: the model returned HTTP {error.code}:\n{detail}")
+    except urllib.error.URLError as error:
+        sys.exit(f"error: {locale}: cannot reach {base_url}: {error.reason}")
+
+    try:
+        content = body["choices"][0]["message"]["content"]
+    except (KeyError, IndexError):
+        sys.exit(f"error: {locale}: unexpected response shape: {json.dumps(body)[:2000]}")
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as error:
+        sys.exit(f"error: {locale}: the response was not JSON ({error}):\n{content[:2000]}")
+
+    return {item["id"]: item["text"] for item in parsed["translations"]}
+
+
+def verify(locale: str, owed: dict[str, Message], translated: dict[str, str]) -> list[str]:
+    """Refuse to write anything that would not survive `build.rs` anyway."""
+    problems = []
+    for id, message in owed.items():
+        if id not in translated:
+            problems.append(f"{locale}: `{id}` was not translated")
+            continue
+        text = translated[id].strip()
+        if not text:
+            problems.append(f"{locale}: `{id}` came back empty")
+            continue
+        if set(VARIABLE.findall(text)) != message.variables:
+            problems.append(
+                f"{locale}: `{id}` uses the wrong variables — expected "
+                f"{sorted(message.variables)}, got {sorted(set(VARIABLE.findall(text)))}"
+            )
+        if ID.match(text):
+            problems.append(f"{locale}: `{id}` came back as a whole assignment, not a value")
+        if message.is_select and "->" in text and "\n" not in text:
+            # Fluent wants the cases of a selection on their own lines; one line is a syntax error,
+            # and it is the one mistake a model makes reliably.
+            problems.append(
+                f"{locale}: `{id}` is a plural selection squeezed onto one line — its cases have "
+                "to be written on separate lines"
+            )
+    return problems
+
+
+def write(locale: str, owed: dict[str, Message], translated: dict[str, str]) -> list[str]:
+    """Append what is new, keeping each message's comment with it.
+
+    Files are appended to rather than rewritten: the English comment travels with the translation
+    and a translation of an older message must not be disturbed by a new one.
+    """
+    directory = CATALOGUE / locale
+    directory.mkdir(parents=True, exist_ok=True)
+    touched = []
+
+    for file in sorted({message.file for message in owed.values()}):
+        path = directory / f"{file}.ftl"
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        block = []
+        for message in owed.values():
+            if message.file != file:
+                continue
+            for line in message.comment:
+                block.append(f"# {line}".rstrip())
+            block.append(f"{message.id} = {translated[message.id].strip()}")
+            block.append("")
+
+        if existing and not existing.endswith("\n\n"):
+            existing = existing.rstrip("\n") + "\n\n"
+        path.write_text(existing + "\n".join(block), encoding="utf-8")
+        touched.append(str(path.relative_to(REPO)))
+
+    return touched
+
+
+def lint() -> None:
+    """Let `build.rs` be the judge, rather than a second copy of its rules living here."""
+    print("· checking the catalogue against the build script")
+    result = subprocess.run(
+        ["cargo", "build", "-p", "protonvpn-core", "--quiet"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        sys.exit(
+            "error: the catalogue does not compile. The messages above name what is wrong; fix it, "
+            "or delete the appended block and run this script again."
+        )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--locale", action="append", help="translate this language only (repeatable)")
+    parser.add_argument("--dry-run", action="store_true", help="list what is missing and stop")
+    parser.add_argument("--check", action="store_true", help="exit 1 if anything is missing")
+    parser.add_argument("--no-lint", action="store_true", help="skip the final cargo build")
+    arguments = parser.parse_args()
+
+    source = read_source()
+    wanted = arguments.locale or [locale for locale in locales() if locale != SOURCE]
+    for locale in wanted:
+        if not (CATALOGUE / locale).is_dir():
+            sys.exit(f"error: i18n/{locale} does not exist — a new language starts as a directory")
+
+    work = {locale: missing(locale, source) for locale in wanted}
+    total = sum(len(owed) for owed in work.values())
+
+    for locale, owed in work.items():
+        if owed:
+            files = sorted({message.file for message in owed.values()})
+            print(f"{locale}: {len(owed)} missing across {', '.join(files)}")
+            for id in list(owed)[:10]:
+                print(f"    {id}")
+            if len(owed) > 10:
+                print(f"    … and {len(owed) - 10} more")
+
+    # The two inspection modes call nothing and build nothing: `--check` is what a hook or a CI
+    # job wants, and the build already refuses an incomplete catalogue on its own.
+    if arguments.dry_run or arguments.check:
+        sys.exit(1 if total else 0)
+
+    if total == 0:
+        print("nothing to translate — every locale is complete")
+        if not arguments.no_lint:
+            lint()
+        return
+
+    if "OPENAI_API_KEY" not in os.environ:
+        sys.exit("error: OPENAI_API_KEY is not set")
+
+    model = os.environ.get("TRANSLATE_MODEL", DEFAULT_MODEL)
+    base_url = os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL)
+    print(f"· translating {total} message(s) with {model}")
+
+    for locale, owed in work.items():
+        if not owed:
+            continue
+        translated = ask(locale, owed, style_samples(locale, source, owed), model, base_url)
+        problems = verify(locale, owed, translated)
+        if problems:
+            for problem in problems:
+                print(f"error: {problem}", file=sys.stderr)
+            sys.exit(1)
+        for path in write(locale, owed, translated):
+            print(f"  {path}")
+
+    if not arguments.no_lint:
+        lint()
+    print("done")
+
+
+if __name__ == "__main__":
+    main()

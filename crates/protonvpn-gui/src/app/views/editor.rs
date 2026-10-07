@@ -16,15 +16,15 @@ use crate::widgets::{self, Tone};
 
 pub(crate) fn view<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a, Message> {
     let heading = if editor.editing.is_some() {
-        "Изменить соединение"
+        app.i18n.editor_title_edit()
     } else {
-        "Новое соединение"
+        app.i18n.editor_title_new()
     };
 
     let header = row![
         column![
             widgets::eyebrow(heading),
-            widgets::muted("страна и город — из protonvpn countries list / cities list"),
+            widgets::muted(app.i18n.editor_subtitle()),
         ]
         .spacing(2)
         .width(Length::Fill),
@@ -36,8 +36,8 @@ pub(crate) fn view<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a
     .align_y(Alignment::Center);
 
     let name = column![
-        text("Название соединения").size(13),
-        text_input("например, Работа", &editor.name)
+        text(app.i18n.editor_name_label()).size(13),
+        text_input(&app.i18n.editor_name_placeholder(), &editor.name)
             .on_input(Message::EditorName)
             .padding(Padding::from([9, 12]))
             .width(Length::Fill),
@@ -54,7 +54,7 @@ pub(crate) fn view<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a
                 EditorFlag::PortForwarding => editor.port_forwarding,
             };
             checkbox(checked)
-                .label(flag.label())
+                .label(flag.label(&app.i18n))
                 .text_size(13)
                 .on_toggle(move |value| Message::EditorFlag(*flag, value))
                 .into()
@@ -74,6 +74,8 @@ pub(crate) fn view<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a
     ]
     .spacing(14);
 
+    // The preview is the launcher's own argv, verbatim: it is data, and it is shown exactly as it
+    // will be executed, in every language. Only the code around it is ours.
     let preview = container(
         text(format!(
             "$ {}",
@@ -90,11 +92,11 @@ pub(crate) fn view<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a
     .style(theme::flat_card);
 
     let buttons = row![
-        button(text("Отмена").size(13))
+        button(text(app.i18n.editor_cancel()).size(13))
             .padding(Padding::from([8, 16]))
             .style(theme::outlined(theme::BORDER, theme::TEXT))
             .on_press(Message::EditorCancel),
-        button(text("Сохранить").size(13))
+        button(text(app.i18n.editor_save()).size(13))
             .padding(Padding::from([8, 18]))
             .style(theme::filled(theme::ACCENT))
             .on_press(Message::EditorSave),
@@ -130,30 +132,29 @@ pub(crate) fn view<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a
 }
 
 fn country_panel<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a, Message> {
-    let search = text_input("Поиск страны или кода", &editor.country_filter)
-        .on_input(Message::EditorFilter)
-        .padding(Padding::from([8, 12]));
+    let search = text_input(
+        &app.i18n.editor_search_placeholder(),
+        &editor.country_filter,
+    )
+    .on_input(Message::EditorFilter)
+    .padding(Padding::from([8, 12]));
 
     let mut list = column![country_option(
         None,
-        "Любая страна",
-        "без --country",
+        app.i18n.editor_any_country(),
+        app.i18n.editor_any_country_hint(),
         editor.country.is_none(),
     )]
     .spacing(4);
 
     let Some(observation) = &app.shared.state.countries else {
-        list = list.push(widgets::note(
-            "Список стран ещё не прочитан: `protonvpn countries list` выполняется один раз за \
-             запуск.",
-        ));
+        list = list.push(widgets::note(app.i18n.editor_countries_pending()));
         // The console sits behind this dialog, so if the CLI refused, say so here rather than
         // leaving an empty list and no reason for it.
         if let Some(error) = &app.shared.state.last_error {
-            list = list.push(widgets::note(format!(
-                "CLI ответил ошибкой: {}",
-                error.value.message
-            )));
+            list = list.push(widgets::note(
+                app.i18n.editor_country_error(&error.value.message),
+            ));
         }
         return column![search, scrollable(list).height(Length::Fill)]
             .spacing(10)
@@ -172,7 +173,7 @@ fn country_panel<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a, 
         .collect();
 
     if countries.is_empty() {
-        list = list.push(widgets::faint("Ничего не найдено."));
+        list = list.push(widgets::faint(app.i18n.editor_country_empty()));
     }
     for country in countries {
         list = list.push(country_option(
@@ -223,25 +224,25 @@ fn country_option<'a>(
 fn city_panel<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a, Message> {
     let Some(country) = editor.country.as_deref() else {
         return column![
-            widgets::eyebrow("Города"),
-            widgets::muted("Сначала выберите страну — города запрашиваются для конкретной."),
+            widgets::eyebrow(app.i18n.editor_cities_title()),
+            widgets::muted(app.i18n.editor_cities_pick_country()),
         ]
         .spacing(8)
         .into();
     };
 
-    let title = widgets::eyebrow(format!("Города · {}", app.country_name(country)));
+    let title = widgets::eyebrow(app.i18n.editor_cities_title_for(app.country_name(country)));
 
     if !app.cities_loaded_for(country) {
-        return column![title, widgets::muted("Запрашиваю список городов…")]
+        return column![title, widgets::muted(app.i18n.editor_cities_loading())]
             .spacing(8)
             .into();
     }
 
     let mut list = column![city_option(
         None,
-        "Любой город",
-        "быстрейший в стране",
+        app.i18n.editor_any_city(),
+        app.i18n.editor_any_city_hint(),
         editor.city.is_none()
     )]
     .spacing(4);
@@ -262,7 +263,7 @@ fn city_panel<'a>(app: &'a App, editor: &'a ConnectionEditor) -> Element<'a, Mes
                 ));
             }
         }
-        _ => list = list.push(widgets::faint("В этой стране нет городов в списке.")),
+        _ => list = list.push(widgets::faint(app.i18n.editor_cities_empty())),
     }
 
     column![title, scrollable(list).height(Length::Fill)]
@@ -295,4 +296,51 @@ fn city_option<'a>(
     .width(Length::Fill)
     .style(theme::connection_card(is_selected))
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use protonvpn_core::i18n::{I18n, Locale};
+
+    #[test]
+    fn the_editor_reads_in_the_source_language() {
+        let i18n = I18n::new(Locale::SOURCE);
+        assert_eq!(i18n.editor_title_new(), "New connection");
+        assert_eq!(i18n.editor_title_edit(), "Edit connection");
+        assert_eq!(i18n.editor_cancel(), "Cancel");
+        assert_eq!(i18n.editor_save(), "Save");
+        assert_eq!(i18n.editor_any_city_hint(), "the fastest in the country");
+    }
+
+    #[test]
+    fn the_data_in_a_message_stays_data() {
+        let i18n = I18n::new(Locale::SOURCE);
+        // The CLI's flag, spelled the way the CLI spells it.
+        assert_eq!(i18n.editor_any_country_hint(), "without --country");
+        // A country name arrives as the CLI printed it and is substituted unchanged.
+        assert_eq!(
+            i18n.editor_cities_title_for("Netherlands"),
+            "Cities · Netherlands"
+        );
+        // So does the CLI's own error text.
+        assert_eq!(
+            i18n.editor_country_error("no such country"),
+            "The CLI answered with an error: no such country"
+        );
+    }
+
+    #[test]
+    fn the_editor_is_translated_rather_than_copied() {
+        let english = I18n::new(Locale::SOURCE);
+        let russian = I18n::new(Locale::from_id("ru").unwrap());
+        assert_ne!(russian.editor_save(), english.editor_save());
+        assert_ne!(russian.editor_any_city(), english.editor_any_city());
+        // Data is the exception: the words around the flag are translated, the flag itself is not.
+        assert!(english.editor_any_country_hint().contains("--country"));
+        assert!(russian.editor_any_country_hint().contains("--country"));
+        assert_ne!(
+            russian.editor_any_country_hint(),
+            english.editor_any_country_hint()
+        );
+    }
 }

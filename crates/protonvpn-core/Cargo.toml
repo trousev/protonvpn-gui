@@ -16,6 +16,18 @@ serde_json = "1"
 # it subtly wrong is silent, and it is the check the whole update path rests on. RustCrypto's
 # implementation, no features beyond the default.
 sha2 = "0.10"
+# Project Fluent — the message catalogue. Chosen above the alternatives for one property that
+# matters more than the rest: a **developer comment lives beside the message**, in the same file,
+# and it is what tells a translator (human, or `scripts/translate`) where the string appears and
+# how much room it has. It also carries real per-language plural rules, which an `if` over a
+# `format!` cannot, and Russian needs `one` / `few` / `many` where English needs two forms.
+fluent-bundle = "0.16"
+unic-langid = "0.9"
+
+[build-dependencies]
+# The catalogues are parsed before this crate compiles, so a locale that is missing a message, or
+# that has lost a `$variable`, stops the build instead of falling back silently at run time.
+fluent-syntax = "0.12"
 
 [[bin]]
 name = "capture-fixtures"

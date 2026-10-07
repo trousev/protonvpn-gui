@@ -776,3 +776,59 @@ nothing, because there is nothing it could truthfully offer.
   the runner's queue; a `curl` in flight has no more to do with `protonvpn status` than the probe
   does. Cancelling kills the child and deletes the partial file — a partly verified image is not
   something to keep.
+
+---
+
+## 15. Language
+
+**English is the source language.** Every word the application says to a person is a message in
+`crates/protonvpn-core/i18n/en/*.ftl`; `ru/` beside it is a translation of exactly that set and
+nothing else. There is no third state: a string is either in the catalogue, or it is data that came
+from outside and is shown as it arrived.
+
+Three rules, and each of them is enforced by something rather than by intent:
+
+1. **The catalogue is the only place a sentence can live.** `crates/protonvpn-core/build.rs` reads
+   every locale before the crate compiles and generates one typed method per message. A locale that
+   is short a message, a file or a `$variable` **fails the build** — not a test, not a warning, not
+   a fallback to English at run time. A fallback is exactly the failure that goes unnoticed for a
+   year.
+2. **Context travels with the string.** Fluent puts a developer comment on the line above each
+   message, in the same file: where it appears, how much room it has, and what a translator could
+   not guess. That comment is the whole reason this library was chosen over a table of constants,
+   and `build.rs` refuses a message without one.
+3. **Data is never translated.** A server name, a country, a city, an IP address, a port, a
+   version, a path, a URL, an exit code, a configuration key or value, and the command line itself
+   are facts about the outside world. The catalogue holds our words *around* them. This is §0
+   applied to text: the console shows the CLI's bytes exactly as they arrived, and that is the only
+   reason anyone should believe it.
+
+The API is generated rather than written, and that is a §5-shaped decision: a call that forgets an
+argument is a compile error rather than a literal `{$port}` on somebody's screen, and a typo in an
+id is impossible because the id *is* the method name. Illegal states are not representable, so
+there is nothing to check at run time.
+
+**Where the language comes from.** `Config::language` is `Option<Locale>`; `None` — the default —
+means the desktop's, read in gettext's own order: `LANGUAGE`, then `LC_ALL`, `LC_MESSAGES`, `LANG`,
+with a region falling back to its language (`de_AT` is German) and an unknown language falling back
+to English (`LANG=C` is not an error, it is "no preference"). Settings → General carries the picker,
+first on the page and offering every language written in itself, because a user who has landed in a
+language they cannot read has to be able to find their way out without reading anything.
+
+**Three catalogues, three threads.** The window, the tray and the engine each hold their own
+`I18n`, and a language change is three statements rather than one: the window swaps its own, the
+engine rebuilds its and re-publishes the tray view, and the tray swaps its own when the view
+arrives saying the language moved. That is not an accident of ownership — Fluent's bundle memoizes
+plural rules behind a lock, so sharing one would put a mutex between a thread and its own sentences
+to save a few tens of kilobytes of parsing.
+
+**Adding a language is adding a directory.** `mkdir crates/protonvpn-core/i18n/de`, run
+`./scripts/translate`, and the `Locale` enum, the picker, the detection and the completeness gate
+all follow from the directory tree. The translation itself is `scripts/translate`: it sends only
+what is missing, with the context comments, as a JSON schema, and finishes by running the real
+check — so a translation is evidence rather than a claim.
+
+**What stays in English, on purpose.** `--version`, the console's own transcript, and every string
+that is a *program's* rather than a person's: argv, exit codes, the CLI's output. The boundary is
+the same one the whole project draws — our words are ours to translate, the CLI's are not ours at
+all.

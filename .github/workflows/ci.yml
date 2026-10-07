@@ -5,7 +5,8 @@ name: ci
 # to secrets, so a fork could run arbitrary code against this repository. Plain `pull_request`
 # gives a fork's code a read-only token, no secrets, and no ability to push. Nothing here needs
 # more than that, and nothing here ever will — the tests do not talk to the network beyond crates.io
-# and the pinned toolchain.
+# and the pinned toolchain, and the translation check is deliberately the mode of `scripts/translate`
+# that calls no model at all and reads no key.
 on:
   pull_request:
   push:
@@ -53,6 +54,13 @@ jobs:
       # or a graph that grew fails in seconds instead of after a full compile.
       - name: Dependencies
         run: ./scripts/check-linux-deps.sh
+
+      # An incomplete translation already fails the build — `build.rs` refuses to compile a locale
+      # that is short a message — so this step exists for the message, not for the gate. It names
+      # what is missing and the one command that fills it, in a second, instead of leaving a wall
+      # of build-script output to read. It calls nothing and needs no key.
+      - name: Translations
+        run: ./scripts/translate --check
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

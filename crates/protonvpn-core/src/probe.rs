@@ -17,6 +17,7 @@
 use std::net::IpAddr;
 use std::process::Command;
 
+use crate::i18n::I18n;
 use crate::model::{EgressReading, ProbeEndpoint};
 
 /// Which address family to ask about. Both are queried separately: an IPv6 leak is invisible to
@@ -53,23 +54,25 @@ pub enum ProbeError {
     Unparseable(String),
 }
 
-impl std::fmt::Display for ProbeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl ProbeError {
+    /// One line under the `curl …` invocation in the console.
+    ///
+    /// A catalogue rather than `Display`, for the reason [`crate::socks5::Closed::describe`]
+    /// gives: these sentences are read by a person, and `curl`'s own name, its exit code and its
+    /// stderr are data.
+    pub fn describe(&self, i18n: &I18n) -> String {
         match self {
-            Self::CurlMissing(e) => write!(f, "curl недоступен: {e}"),
-            Self::CurlFailed { code, stderr } => {
-                write!(f, "curl завершился с кодом {}", code.unwrap_or(-1))?;
-                if !stderr.trim().is_empty() {
-                    write!(f, ": {}", stderr.trim())?;
-                }
-                Ok(())
+            Self::CurlMissing(detail) => i18n.probe_curl_missing(detail),
+            Self::CurlFailed { code, stderr } if stderr.trim().is_empty() => {
+                i18n.probe_curl_failed(code.unwrap_or(-1) as i64)
             }
-            Self::Unparseable(body) => write!(f, "не удалось разобрать ответ: {body}"),
+            Self::CurlFailed { code, stderr } => {
+                i18n.probe_curl_failed_detail(code.unwrap_or(-1) as i64, stderr.trim())
+            }
+            Self::Unparseable(body) => i18n.probe_unparseable(body),
         }
     }
 }
-
-impl std::error::Error for ProbeError {}
 
 /// A probe pinned to one endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +201,11 @@ pub fn parse(endpoint: ProbeEndpoint, body: &str) -> Option<EgressReading> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Locale;
+
+    fn english() -> I18n {
+        I18n::new(Locale::SOURCE)
+    }
 
     #[test]
     fn parses_ifconfig_co() {
@@ -279,7 +287,21 @@ mod tests {
     #[test]
     fn a_failure_to_parse_is_not_a_reading() {
         let error = ProbeError::Unparseable("{}".into());
-        assert!(error.to_string().contains("не удалось разобрать"));
+        assert!(error.describe(&english()).contains("could not be parsed"));
+        // A `curl` that failed says which code it failed with, and quotes what it said.
+        let bare = ProbeError::CurlFailed {
+            code: Some(28),
+            stderr: String::new(),
+        };
+        assert_eq!(bare.describe(&english()), "curl finished with exit code 28");
+        let talkative = ProbeError::CurlFailed {
+            code: None,
+            stderr: "connection timed out\n".into(),
+        };
+        assert_eq!(
+            talkative.describe(&english()),
+            "curl finished with exit code -1: connection timed out"
+        );
         // And the parse itself never invents an address out of an empty object.
         assert_eq!(parse(ProbeEndpoint::IfConfigCo, "{}"), None);
     }

@@ -46,6 +46,10 @@ a fifth without a human decision.
 | `crates/protonvpn-core/src/socks5.rs` | the local SOCKS5 proxy (exception #3): the protocol, the listener, the counters |
 | `crates/protonvpn-core/src/net/route.rs` | the kernel's source-address answer the proxy's gate is built on — a connected UDP socket that is never written to |
 | `crates/protonvpn-core/src/update.rs` | the AppImage updater (exception #4): the check, the checksum, the swap |
+| `crates/protonvpn-core/i18n/` | the message catalogue — one directory per language, English first |
+| `crates/protonvpn-core/build.rs` | compiles the catalogue and **fails the build** on an incomplete translation |
+| `docs/i18n.md` | the localization rules, in prose |
+| `scripts/translate` | fills in what is missing, with an LLM; run it before opening a pull request |
 | `scripts/version.sh` | the one definition of `X.Y.N` — published as a tag and baked into the binary |
 | `packaging/` | AppImage build script, `.desktop`, icon |
 
@@ -60,6 +64,9 @@ cargo test -p protonvpn-core --test live_update -- --ignored --nocapture
 cargo fmt --all                             # formatting is enforced
 cargo clippy --all-targets -- -D warnings   # warnings are errors
 ./scripts/check-linux-deps.sh               # Linux-only graph, and a ratcheted crate count
+./scripts/translate                         # translate what is missing, then verify the build
+./scripts/translate --dry-run               # say what is missing; call nothing
+./scripts/translate --check                 # exit 1 if any locale is incomplete; call nothing
 ./scripts/capture-fixtures.sh               # re-capture fixtures, disconnected set (safe)
 ./scripts/capture-fixtures.sh --connected   # also brings the VPN up and back down
 ./packaging/appimage/build.sh               # AppImage
@@ -69,8 +76,11 @@ cargo clippy --all-targets -- -D warnings   # warnings are errors
 ./scripts/release.sh --local --dry-run      # build and package a release without publishing
 ```
 
-CI runs exactly these four gates — fmt, dependencies, clippy, tests — and `main` cannot move until
-they are green.
+CI runs exactly these gates — fmt, dependencies, translations, clippy, tests — and `main` cannot
+move until they are green. The translation step is not a fifth rule: `build.rs` already refuses to
+compile an incomplete locale, so clippy and the tests would fail anyway. It runs first because it
+names what is missing and the one command that fills it, in a second, instead of leaving a wall of
+build-script output to read. It calls no model and reads no key.
 
 The dependency gate exists because the graph is the one thing that grows without anyone deciding
 to grow it. This application is Linux only: it is not built, tested or shipped for Android, Windows
@@ -128,6 +138,41 @@ can only be checked by a real run.
 - `protonvpn-core` must never depend on a GUI toolkit.
 - Prefer making illegal states unrepresentable over checking for them at runtime.
 - Comments explain reasoning and measured facts. Not what the next line does.
+
+## Language
+
+**English is the source language.** Every word the application says to a person lives in
+`crates/protonvpn-core/i18n/en/*.ftl` — Project Fluent, one directory per language, a `#` developer
+comment above every message saying where it appears and how much room it has. That comment is why
+Fluent was chosen over a table of constants: it is the translator's only view of the screen.
+
+The whole contract is [`docs/i18n.md`](docs/i18n.md), and `build.rs` enforces it: a locale that is
+short a message, a file or a `$variable` **does not compile**. That is deliberate — a runtime
+fallback to English is the failure that goes unnoticed for a year.
+
+> **Before opening a pull request, run `./scripts/translate`.**
+
+It reads `$OPENAI_API_KEY`, translates exactly what is missing with `gpt5-terra` (override with
+`$TRANSLATE_MODEL`), writes it with the English comment carried along, and finishes by running the
+real check. `./scripts/translate --check` reports gaps without calling anything.
+
+Adding a language is adding a directory: `mkdir crates/protonvpn-core/i18n/de`, run the script. The
+`Locale` enum, the language picker in Settings and the environment detection all follow from the
+directory tree.
+
+Two rules that are easy to get wrong and expensive later:
+
+- **A literal is not a string.** If it is not in the catalogue it cannot be translated, and a
+  `format!` that builds a sentence out of Russian fragments is a sentence in one language forever.
+  Grep for Cyrillic before you finish: `grep -rnP '[\x{0400}-\x{04FF}]' crates --include='*.rs'`.
+  Exactly one hit is legitimate, and it says so in its own comment: the test in
+  `views/settings.rs` that asserts the Russian wording of a plural whose English has two forms and
+  whose Russian has three — the one place a copy of the English would still compile and still be
+  wrong.
+- **Data is never translated.** A server name, a country, a city, an IP address, a port, a version,
+  a path, a URL, an exit code, a CLI key or value, and the command line itself are facts about the
+  outside world. Our own words *around* them are what the catalogue holds — the console exists to
+  show the CLI's bytes exactly as they arrived, and that is the whole reason it is trustworthy.
 
 ## Things that will bite you
 
@@ -188,7 +233,7 @@ and `engine.rs`, plus the `iced` window, the console pane, the `ksni` tray and a
 project's own plumbing: protected `main`, CI on every pull request, and a release pipeline. Then
 the connection manager and the redesigned window ([`docs/architecture.md`](docs/architecture.md)
 §11): country, city, P2P, Secure Core, Tor and port forwarding are properties of a **saved
-connection**, the shell is a light two-page window (Обзор / Настройки) with the console pinned
+connection**, the shell is a light two-page window (Overview / Settings) with the console pinned
 underneath, and the login form is a page rather than a tab. `design/after/` holds screenshots of
 the result. Then a dependency audit: iced's unused `auto-detect-theme` — and behind it
 `dark-light`, a second `zbus` stack, `dconf` and a desktop-sniffing crate — is gone, taking the
@@ -205,7 +250,7 @@ which is the only way a Wayland desktop can give the window a name and an icon a
 (`docs/architecture.md` §12). Then an opt-in qBittorrent port push — the third sanctioned
 exception — was built and removed again: it never worked against a real client, and it is not
 worth a standing hole in the "only `protonvpn`" rule ([`docs/architecture.md`](docs/architecture.md)
-§0, §10.4). Then a bug from live use: with «Подключаться при запуске» on, the app re-issued
+§0, §10.4). Then a bug from live use: with `Connect at startup` on, the app re-issued
 `connect` on every start even when the CLI already reported a connection — and `connect` against a
 live tunnel switches servers silently (`docs/cli-surface.md` §4.4), so a working tunnel was being
 rebuilt on launch. The startup connect is now a *request* the engine holds until the session's
@@ -229,9 +274,23 @@ version inside the asset's own name), checks the bytes against the checksum publ
 against the type-2 AppImage marker, and swaps the image in place with a hard link and an atomic
 rename — the previous one stays as `<name>.old` until the next start proves the new one works. The
 check and the download run off the engine's thread and off the runner's queue, four policies govern
-what happens without being asked (`скачивать` by default), and **nothing downloaded is ever
+what happens without being asked (`download` by default), and **nothing downloaded is ever
 executed**: the new image takes effect at the next start. What the checksum does not prove —
 authorship — is written down in `SECURITY.md` rather than implied.
+
+Then localization ([`docs/architecture.md`](docs/architecture.md) §15,
+[`docs/i18n.md`](docs/i18n.md)): the application had exactly one language and it was not the one in
+the source — every sentence was a Russian literal in a Rust file, so a second language would have
+been a fork. Now English is the source and the words live in a Project Fluent catalogue under
+`crates/protonvpn-core/i18n/`, one directory per language; `build.rs` parses all of it **before the
+crate compiles** and refuses to build a locale that is short a message, a file or a `$variable`, so
+an incomplete translation is a compile error rather than a silent fallback. The same script
+generates one typed method per message, which makes a forgotten argument a compile error too. Each
+message carries a developer comment saying where it appears and how much room it has — the reason
+Fluent was chosen over a table of constants — and `scripts/translate` fills the gaps with an LLM,
+sending only what is missing and finishing by running the real check. The language follows the
+desktop (`$LANGUAGE`, `$LC_ALL`, `$LC_MESSAGES`, `$LANG`) and can be pinned in Settings → General.
+Our words are translated; the CLI's bytes are not.
 
 **Next:** a live `signin` run with real credentials (needs a human — the password prompt is
 captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; a live

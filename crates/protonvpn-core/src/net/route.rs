@@ -12,9 +12,10 @@
 //! question any ordinary client asks the kernel when it opens a socket. We do not learn what the
 //! tunnel is; we learn only whether the kernel's answer has changed.
 
-use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::sync::Mutex;
+
+use crate::i18n::I18n;
 
 /// The off-link destination the route lookup is aimed at. It is **never contacted**: the socket
 /// exists only so the kernel has something to route, and it is closed without a write. A literal
@@ -25,22 +26,27 @@ const OFF_LINK_PORT: u16 = 53;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteError {
-    /// The kernel has no route to an off-link destination at all.
+    /// The kernel has no route to an off-link destination at all. The string is the kernel's own
+    /// complaint, and is empty when there is none to quote — a scripted answer has no `errno`.
     NoRoute(String),
     /// The kernel answered, but with an address that cannot be a source address.
     Unusable(String),
 }
 
-impl fmt::Display for RouteError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl RouteError {
+    /// One line for the console and the proxy's card.
+    ///
+    /// A catalogue rather than `Display`, for the reason [`crate::socks5::Closed::describe`]
+    /// gives: this is a sentence shown to a person. The kernel's own complaint inside it is data
+    /// and is never translated.
+    pub fn describe(&self, i18n: &I18n) -> String {
         match self {
-            Self::NoRoute(e) => write!(f, "нет маршрута: {e}"),
-            Self::Unusable(e) => write!(f, "ядро не выбрало адрес источника: {e}"),
+            Self::NoRoute(detail) if detail.is_empty() => i18n.core_route_unreachable(),
+            Self::NoRoute(detail) => i18n.core_route_unreachable_detail(detail),
+            Self::Unusable(address) => i18n.core_route_unusable(address),
         }
     }
 }
-
-impl std::error::Error for RouteError {}
 
 /// Reports the source address the kernel would use for off-link IPv4 traffic.
 ///
@@ -109,7 +115,9 @@ impl RouteProbe for ScriptedRoute {
     fn source(&self) -> Result<Ipv4Addr, RouteError> {
         match *self.answer.lock().unwrap_or_else(|p| p.into_inner()) {
             Some(ip) => Ok(ip),
-            None => Err(RouteError::NoRoute("маршрута нет".to_string())),
+            // No kernel was asked, so there is no complaint to quote: the reason is the absence
+            // itself, and `describe` has a sentence for exactly that.
+            None => Err(RouteError::NoRoute(String::new())),
         }
     }
 }
@@ -141,9 +149,20 @@ mod tests {
     /// real probe answers or fails, and never invents an unusable source.
     #[test]
     fn the_real_probe_answers_or_says_why_not() {
+        let i18n = I18n::new(crate::i18n::Locale::SOURCE);
         match Kernel.source() {
             Ok(ip) => assert!(usable_source(ip), "{ip}"),
-            Err(error) => assert!(!error.to_string().is_empty()),
+            Err(error) => assert!(!error.describe(&i18n).is_empty()),
         }
+    }
+
+    #[test]
+    fn a_lost_route_says_so_without_inventing_a_reason() {
+        let i18n = I18n::new(crate::i18n::Locale::SOURCE);
+        let probe = ScriptedRoute::default();
+        assert_eq!(
+            probe.source().unwrap_err().describe(&i18n),
+            "no route to the outside"
+        );
     }
 }

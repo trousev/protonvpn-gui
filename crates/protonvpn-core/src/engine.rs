@@ -30,6 +30,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::{Config, ConfigStore, UpdatePolicy};
+use crate::i18n::{I18n, Locale};
 use crate::interpreter::{self, PromptKind};
 use crate::launcher::Intent;
 use crate::logbus::{InvocationKind, LogBus, LogEvent};
@@ -42,7 +43,9 @@ use crate::net::route::{self, RouteProbe};
 use crate::poll::PollSchedule;
 use crate::probe::{self, Probe, ProbeError};
 use crate::runner::{Job, Runner, RunnerEvent};
-use crate::socks5::{self, Closed, GateState, Reporter, Socks5, Socks5Event, Stats, TunnelGate};
+use crate::socks5::{
+    self, Closed, GateState, Reporter, RouteLoss, Socks5, Socks5Event, Stats, TunnelGate,
+};
 use crate::update::{self, Installed, Release, UpdateError, Version};
 
 /// Engine tick. Short enough that streamed output feels live, long enough to be free.
@@ -95,6 +98,10 @@ fn since(at: SystemTime) -> Duration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayView {
     pub status: ConnectionStatus,
+    /// The language the labels in this view are written in. The tray renders its own menu, on its
+    /// own thread, and this is how a language change reaches it: through the same update that
+    /// carries everything else.
+    pub language: Locale,
     /// `NL#818 · Amsterdam, Netherlands` when connected.
     pub detail: Option<String>,
     pub age_text: String,
@@ -256,6 +263,10 @@ pub enum Request {
         started_at: SystemTime,
         duration: Duration,
     },
+    /// Speak another language from now on. The engine holds its own catalogue because every note
+    /// it writes is already-rendered text; switching here is what makes a language change reach
+    /// the tray and everything the engine says next.
+    SetLanguage(Locale),
     /// Ask the release page what the latest version is. Works whatever the policy says: an
     /// explicit request is consent, and a button that refuses to work would be a lie.
     UpdateCheck,
@@ -403,6 +414,9 @@ pub struct EngineOptions {
     /// How long the updater waits after startup before its first look. A test seam the way
     /// `program` is one: the cadence itself is a number a test must not have to sleep through.
     pub update_delay: Duration,
+    /// The language of every word this engine produces — a note in the console, the tray's menu.
+    /// The window sets it from the configuration; the tests set it to whatever they assert on.
+    pub locale: Locale,
 }
 
 impl EngineOptions {
@@ -419,6 +433,7 @@ impl EngineOptions {
             curl: "curl".to_string(),
             installed: Installed::detect(),
             update_delay: UPDATE_STARTUP_DELAY,
+            locale: Locale::SOURCE,
         }
     }
 }
@@ -479,6 +494,7 @@ pub fn spawn(options: EngineOptions) -> EngineHandle {
         startup_connect: None,
         status_attempted: false,
         secrets: None,
+        i18n: I18n::new(options.locale),
         tray: options.tray,
         tray_view: None,
         cwd: options.cwd,
@@ -592,6 +608,9 @@ struct Engine {
     /// could not be asked" is not a reason to stay parked forever.
     status_attempted: bool,
     secrets: Option<Secrets>,
+    /// Every word this engine writes. Its own instance rather than the window's: the two run on
+    /// different threads, and a `FluentBundle` is `Send` but not `Sync`.
+    i18n: I18n,
     tray: Option<Box<dyn TrayPresenter>>,
     tray_view: Option<TrayView>,
     cwd: PathBuf,
@@ -683,7 +702,8 @@ impl Engine {
 
         // Best-effort: give the port back rather than leaving a stale mapping behind.
         if self.lease.is_some() {
-            self.release_lease("выход из приложения");
+            let why = self.i18n.engine_lease_why_quit();
+            self.release_lease(&why);
         }
     }
 
@@ -744,7 +764,8 @@ impl Engine {
                     .as_ref()
                     .is_some_and(|server| Some(server) != lease.server.as_ref());
             if moved {
-                self.release_lease("подключение изменилось");
+                let why = self.i18n.engine_lease_why_connection_changed();
+                self.release_lease(&why);
             }
         }
 
@@ -844,7 +865,10 @@ impl Engine {
                 self.lease_attempted_for = None;
                 self.maybe_start_lease();
             }
-            Request::ReleasePort => self.release_lease("по запросу пользователя"),
+            Request::ReleasePort => {
+                let why = self.i18n.engine_lease_why_user_request();
+                self.release_lease(&why);
+            }
             Request::Cancel => {
                 self.runner.cancel();
             }
@@ -855,6 +879,12 @@ impl Engine {
                 }
             }
             Request::SaveConfig(config) => self.save_config(*config),
+            Request::SetLanguage(locale) => {
+                self.i18n.set_locale(locale);
+                // The tray's menu is rebuilt from the view, so a new view is the whole update.
+                self.tray_view = None;
+                self.publish_tray();
+            }
             Request::Socks5Report(event) => self.react_to_socks5(event),
             Request::Ui(command) => {
                 let mut shared = self.lock();
@@ -872,7 +902,7 @@ impl Engine {
                     );
                 }
                 if self.probe.is_none() {
-                    self.note("ни один сервис проверки внешнего адреса не ответил");
+                    self.note(&self.i18n.engine_probe_unavailable());
                 }
             }
             Request::ProbeFinished {
@@ -889,7 +919,7 @@ impl Engine {
                     // for what we ran, so only a conclusion gets a line (§13).
                     let lines = match &result {
                         Ok(reading) => vec![describe_reading(reading)],
-                        Err(error) => vec![error.to_string()],
+                        Err(error) => vec![error.describe(&self.i18n)],
                     };
                     self.record_note(
                         format!("curl -sS --max-time 8 --ipv4 {}", endpoint.url()),
@@ -941,7 +971,8 @@ impl Engine {
             // answerable if we know what it was.
             self.take_baseline_async();
             if self.lease.is_some() {
-                self.release_lease("перед новым подключением");
+                let why = self.i18n.engine_lease_why_before_connect();
+                self.release_lease(&why);
             }
             self.lease_attempted_for = None;
         }
@@ -971,9 +1002,9 @@ impl Engine {
         };
         let already = match &self.state.connection.value {
             ConnectionStatus::Connected(info) => {
-                Some(format!("уже подключено: {}", info.describe()))
+                Some(self.i18n.engine_startup_connect_already(info.describe()))
             }
-            ConnectionStatus::Connecting => Some("подключение уже выполняется".to_string()),
+            ConnectionStatus::Connecting => Some(self.i18n.engine_startup_connect_in_progress()),
             _ => None,
         };
         match already {
@@ -982,7 +1013,7 @@ impl Engine {
             Some(why) => {
                 let started_at = SystemTime::now();
                 self.record_note(
-                    "connect при старте пропущен".to_string(),
+                    self.i18n.engine_startup_connect_skipped(),
                     vec![why],
                     started_at,
                     Duration::ZERO,
@@ -1026,11 +1057,13 @@ impl Engine {
             },
         );
 
-        let job = Job::command(argv, self.cwd.clone()).with_id(id);
+        let job = Job::command(argv, self.cwd.clone())
+            .with_id(id)
+            .with_language(self.i18n.locale());
         let job = if interactive { job.interactive() } else { job };
         if !self.runner.submit(job) {
             self.jobs.remove(&id);
-            self.note("не удалось поставить команду в очередь");
+            self.note(&self.i18n.engine_submit_failed());
             return;
         }
         self.publish_runner_status();
@@ -1094,7 +1127,7 @@ impl Engine {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let mut state = std::mem::take(&mut self.state);
-                interpreter::apply(&mut state, &log_event, bus.get(id));
+                interpreter::apply(&mut state, &log_event, bus.get(id), &self.i18n);
                 state
             };
             self.state = next;
@@ -1216,7 +1249,7 @@ impl Engine {
             Some(value) if !value.is_empty() => match self.runner.stdin() {
                 Some(stdin) => {
                     if stdin.write_line(&value).is_err() {
-                        self.note("не удалось передать ввод в процесс CLI");
+                        self.note(&self.i18n.engine_stdin_failed());
                     }
                 }
                 None => self.set_pending_prompt(Some(PendingPrompt {
@@ -1366,11 +1399,12 @@ impl Engine {
         let update = tray_update(&self.update);
         let view = TrayView {
             status: self.state.connection.value.clone(),
+            language: self.i18n.locale(),
             detail: match &self.state.connection.value {
                 ConnectionStatus::Connected(info) => Some(info.describe()),
                 _ => None,
             },
-            age_text: self.state.connection.age_text(),
+            age_text: self.i18n.age_text(self.state.connection.age()),
             update,
         };
         if self.tray_view.as_ref() == Some(&view) {
@@ -1391,11 +1425,11 @@ impl Engine {
         match self.runner.stdin() {
             Some(stdin) => {
                 if stdin.write_line(text).is_err() {
-                    self.note("не удалось передать ввод в процесс CLI");
+                    self.note(&self.i18n.engine_stdin_failed());
                 }
                 self.set_pending_prompt(None);
             }
-            None => self.note("CLI сейчас не ждёт ввода"),
+            None => self.note(&self.i18n.engine_no_prompt()),
         }
     }
 
@@ -1425,7 +1459,7 @@ impl Engine {
                     self.next_update_check = Instant::now() + UPDATE_STARTUP_DELAY;
                 }
             }
-            Err(error) => self.note(&error.to_string()),
+            Err(error) => self.note(&error.describe(&self.i18n)),
         }
     }
 
@@ -1481,11 +1515,11 @@ impl Engine {
 
     fn probe_now(&mut self) {
         if !self.config.probe_enabled {
-            self.note("проверка внешнего адреса отключена в настройках");
+            self.note(&self.i18n.engine_probe_disabled());
             return;
         }
         let Some(probe) = self.probe.clone() else {
-            self.note("ни один сервис проверки внешнего адреса не ответил");
+            self.note(&self.i18n.engine_probe_unavailable());
             return;
         };
         if self.probe_in_flight {
@@ -1566,12 +1600,12 @@ impl Engine {
         let external_ip = match client.public_address() {
             Ok(ip) => Some(ip),
             Err(error) => {
-                let message = error.to_string();
+                let message = error.describe(&self.i18n);
                 self.state.port_forwarding =
                     Observation::now(PortForwarding::Unavailable(message.clone()));
                 self.publish_state();
                 self.record_note(
-                    format!("NAT-PMP public address {gateway}"),
+                    self.i18n.engine_lease_note_public_address(&gateway),
                     vec![message],
                     started_at,
                     since(started_at),
@@ -1580,32 +1614,34 @@ impl Engine {
             }
         };
 
-        let mut lines = vec![format!(
-            "публичный адрес шлюза: {}",
-            external_ip.map(|ip| ip.to_string()).unwrap_or_default()
+        let mut lines = vec![self.i18n.engine_lease_gateway_address(
+            external_ip.map(|ip| ip.to_string()).unwrap_or_default(),
         )];
         let mut port = None;
         let mut lifetime = natpmp::LEASE;
         for protocol in [Protocol::Udp, Protocol::Tcp] {
             match client.map(protocol, 0, 0, natpmp::LEASE) {
                 Ok(mapping) => {
-                    lines.push(format!(
-                        "{}: внешний порт {} (внутренний {}), срок {} с",
+                    lines.push(self.i18n.engine_lease_mapped(
                         protocol.label(),
-                        mapping.external_port,
-                        mapping.internal_port,
-                        mapping.lifetime.as_secs()
+                        mapping.external_port as i64,
+                        mapping.internal_port as i64,
+                        mapping.lifetime.as_secs() as i64,
                     ));
                     port = Some(mapping.external_port);
                     lifetime = mapping.lifetime.max(Duration::from_secs(1));
                 }
                 Err(error) => {
-                    lines.push(format!("{}: {error}", protocol.label()));
+                    lines.push(format!(
+                        "{}: {}",
+                        protocol.label(),
+                        error.describe(&self.i18n)
+                    ));
                     if matches!(error, natpmp::NatPmpError::Refused { .. }) {
                         self.state.port_forwarding = Observation::now(PortForwarding::Unsupported);
                         self.publish_state();
                         self.record_note(
-                            format!("NAT-PMP map {} {gateway}", protocol.label()),
+                            self.i18n.engine_lease_note_map(protocol.label(), &gateway),
                             lines,
                             started_at,
                             since(started_at),
@@ -1617,7 +1653,7 @@ impl Engine {
         }
 
         self.record_note(
-            format!("NAT-PMP map UDP+TCP {gateway}"),
+            self.i18n.engine_lease_note_map("UDP+TCP", &gateway),
             lines,
             started_at,
             since(started_at),
@@ -1641,7 +1677,7 @@ impl Engine {
             }
             None => {
                 self.state.port_forwarding = Observation::now(PortForwarding::Unavailable(
-                    "шлюз не выдал порт".to_string(),
+                    self.i18n.engine_lease_no_port(),
                 ));
                 self.publish_state();
             }
@@ -1676,10 +1712,10 @@ impl Engine {
             // (`docs/cli-surface.md` §4.7).
             self.lease = None;
             self.state.port_forwarding = Observation::now(PortForwarding::Unavailable(
-                "не удалось продлить аренду порта".to_string(),
+                self.i18n.engine_lease_renew_failed(),
             ));
             self.publish_state();
-            self.note("проброс порта потерян: шлюз не подтвердил продление");
+            self.note(&self.i18n.engine_lease_lost());
         }
     }
 
@@ -1692,12 +1728,16 @@ impl Engine {
         let mut lines = Vec::new();
         for protocol in [Protocol::Udp, Protocol::Tcp] {
             match client.release(protocol, lease.port) {
-                Ok(()) => lines.push(format!("{}: аренда освобождена", protocol.label())),
-                Err(error) => lines.push(format!("{}: {error}", protocol.label())),
+                Ok(()) => lines.push(self.i18n.engine_lease_released(protocol.label())),
+                Err(error) => lines.push(format!(
+                    "{}: {}",
+                    protocol.label(),
+                    error.describe(&self.i18n)
+                )),
             }
         }
         self.record_note(
-            format!("NAT-PMP release {} ({why})", lease.port),
+            self.i18n.engine_lease_note_release(lease.port as i64, why),
             lines,
             started_at,
             since(started_at),
@@ -1739,10 +1779,7 @@ impl Engine {
                 port: self.config.socks5.port,
             },
             Err(_) => {
-                self.unavailable(format!(
-                    "адрес `{address}` не подходит: прокси слушает только петлевой IPv4 \
-                     (127.0.0.1 или localhost)"
-                ));
+                self.unavailable(self.i18n.engine_socks5_bad_address(address));
                 return;
             }
         };
@@ -1761,10 +1798,10 @@ impl Engine {
                 self.socks5_listen = Some(server.addr());
                 self.socks5 = Some(server);
                 self.publish_socks5();
-                self.note_socks5("слушает: соединения пойдут только через туннель".to_string());
+                self.note_socks5(self.i18n.engine_socks5_listening());
                 self.arm_socks5();
             }
-            Err(error) => self.unavailable(error.to_string()),
+            Err(error) => self.unavailable(error.describe(&self.i18n)),
         }
     }
 
@@ -1776,7 +1813,7 @@ impl Engine {
             detail: detail.clone(),
         });
         self.publish_socks5();
-        self.note_socks5(format!("не слушает: {detail}"));
+        self.note_socks5(self.i18n.engine_socks5_not_listening(&detail));
         self.note(&detail);
     }
 
@@ -1847,7 +1884,7 @@ impl Engine {
             Ok(candidate) => candidate,
             Err(error) => {
                 self.close_gate(Closed::RouteLost {
-                    detail: error.to_string(),
+                    detail: RouteLoss::Unreadable(error),
                 });
                 return;
             }
@@ -1862,9 +1899,10 @@ impl Engine {
                 self.dial_failures = 0;
                 self.gate.open(candidate);
                 self.publish_socks5();
-                self.note_socks5(format!(
-                    "маршрут подтверждён: {candidate} (отличается от наблюдённого {reference})"
-                ));
+                self.note_socks5(
+                    self.i18n
+                        .engine_socks5_route_proven(candidate.to_string(), reference.to_string()),
+                );
             }
             _ => {
                 self.shut_gate(Closed::Unverified { candidate });
@@ -1913,7 +1951,7 @@ impl Engine {
         if !changed || !was_open {
             return;
         }
-        self.note_socks5(format!("закрыт: {}", reason.describe()));
+        self.note_socks5(self.i18n.engine_socks5_closed(reason.describe(&self.i18n)));
     }
 
     /// Reports from the proxy's own threads.
@@ -1941,7 +1979,7 @@ impl Engine {
                 self.dial_failures += 1;
                 if self.dial_failures >= DIAL_FAILURE_LIMIT {
                     self.close_gate(Closed::RouteLost {
-                        detail: format!("{target}: {detail}"),
+                        detail: RouteLoss::Dial { target, detail },
                     });
                 }
             }
@@ -1957,7 +1995,7 @@ impl Engine {
             self.probe_failures += 1;
             if self.probe_failures >= WATCH_FAILURE_LIMIT {
                 self.close_gate(Closed::ProbeUnanswered {
-                    detail: "две проверки подряд не ответили".to_string(),
+                    detail: self.i18n.engine_socks5_two_probes_silent(),
                 });
             }
             return;
@@ -2052,7 +2090,7 @@ impl Engine {
     /// whether a `protonvpn` command is running. Nothing here waits for that thread.
     fn start_update_check(&mut self) {
         if self.update_busy() {
-            self.note("проверка обновлений уже идёт");
+            self.note(&self.i18n.engine_update_check_running());
             return;
         }
         self.update_job = UpdateJob::Checking;
@@ -2078,20 +2116,24 @@ impl Engine {
 
     /// Downloads the release and, when asked, puts it in place — both on one thread, because the
     /// second half of that is a rename. [`update::fetch`] reuses a staged file that already hashes
-    /// right, so «Установить» after a download is a rename and not a second 70 MB.
+    /// right, so `Install` after a download is a rename and not a second 70 MB.
     fn start_update_fetch(&mut self, install_after: bool) {
         if self.update_busy() {
             return;
         }
         let (Some(installed), Some(release)) = (self.installed.clone(), self.release.clone())
         else {
-            self.note(if self.installed.is_none() {
-                "эта сборка не AppImage — подменить себя не могу, обновление придётся скачать вручную"
+            self.note(&if self.installed.is_none() {
+                self.i18n.engine_update_not_an_appimage()
             } else {
-                "не знаю, что скачивать: сначала нужна проверка обновлений"
+                self.i18n.engine_update_nothing_to_fetch()
             });
             return;
         };
+
+        // Spelled here rather than inside the thread: the catalogue belongs to this thread, and
+        // the title has to exist before the download starts in case the rename fails.
+        let install_note = self.i18n.engine_update_note(release.version.to_string());
 
         self.update_cancel.store(false, Ordering::Relaxed);
         self.update_job = UpdateJob::Fetching { install_after };
@@ -2143,7 +2185,7 @@ impl Engine {
                                     duration,
                                 },
                                 Err(error) => UpdateEvent::Failed {
-                                    display: format!("обновление {}", release.version),
+                                    display: install_note,
                                     error,
                                     started_at,
                                     duration,
@@ -2164,13 +2206,13 @@ impl Engine {
             .ok();
     }
 
-    /// «Установить»: what is staged goes in place, and what is not gets downloaded first.
+    /// Install: what is staged goes in place, and what is not gets downloaded first.
     fn install_update(&mut self) {
         if self.update_busy() {
             return;
         }
         if let UpdatePhase::Installed { .. } = self.update.phase {
-            self.note("обновление уже на месте — оно заработает при следующем запуске");
+            self.note(&self.i18n.engine_update_already_installed());
             return;
         }
         self.start_update_fetch(true);
@@ -2219,6 +2261,7 @@ impl Engine {
                         self.update.phase = UpdatePhase::Idle;
                         self.release = None;
                         self.remember_check(Instant::now() + UPDATE_INTERVAL);
+                        let why = why.describe(&self.i18n);
                         self.record_note(command, vec![why.clone()], started_at, duration);
                         self.note(&why);
                     }
@@ -2229,7 +2272,7 @@ impl Engine {
                         self.remember_check(Instant::now() + UPDATE_INTERVAL);
                         self.record_note(
                             command,
-                            vec![format!("последний релиз: {}", release.version)],
+                            vec![self.i18n.engine_update_latest(release.version.to_string())],
                             started_at,
                             duration,
                         );
@@ -2239,13 +2282,15 @@ impl Engine {
                         match standing {
                             update::Standing::Current => {}
                             update::Standing::Unversioned => {
-                                self.note("эта сборка без версии — сравнивать не с чем");
+                                self.note(&self.i18n.engine_update_unversioned());
                             }
                             update::Standing::Behind(version) => {
                                 if self.installed.is_none() {
-                                    self.note(&format!(
-                                        "доступна версия {version}, но эта сборка не AppImage — скачайте её вручную"
-                                    ));
+                                    self.note(
+                                        &self
+                                            .i18n
+                                            .engine_update_available_manual(version.to_string()),
+                                    );
                                 } else if matches!(
                                     self.config.update.policy,
                                     UpdatePolicy::Download | UpdatePolicy::Install
@@ -2258,10 +2303,11 @@ impl Engine {
                         }
                     }
                     Err(error) => {
-                        self.update.error = Some(error.to_string());
+                        let described = error.describe(&self.i18n);
+                        self.update.error = Some(described.clone());
                         self.update.phase = UpdatePhase::Idle;
                         self.remember_check(Instant::now() + UPDATE_RETRY);
-                        self.record_note(command, vec![error.to_string()], started_at, duration);
+                        self.record_note(command, vec![described], started_at, duration);
                     }
                 }
                 self.publish_update();
@@ -2281,11 +2327,9 @@ impl Engine {
                 self.record_note(
                     self.update_download_command(),
                     vec![
-                        format!(
-                            "скачано {} , контрольная сумма совпала",
-                            update::human_bytes(bytes)
-                        ),
-                        format!("{version} ждёт установки: заработает после перезапуска"),
+                        self.i18n
+                            .engine_update_downloaded(update::human_bytes(bytes, &self.i18n)),
+                        self.i18n.engine_update_staged(version.to_string()),
                     ],
                     started_at,
                     duration,
@@ -2300,21 +2344,16 @@ impl Engine {
             } => {
                 self.update_job = UpdateJob::Idle;
                 self.update.phase = UpdatePhase::Installed { version };
-                let mut lines = vec![format!("образ {version} занял место предыдущего")];
+                let mut lines = vec![self.i18n.engine_update_installed(version.to_string())];
                 match &backup {
-                    Some(path) => lines.push(format!(
-                        "предыдущий оставлен как {} и будет удалён при следующем запуске",
-                        path.display()
-                    )),
-                    None => lines.push(
-                        "предыдущий сохранить не удалось — откатываться будет нечем".to_string(),
-                    ),
+                    Some(path) => {
+                        lines.push(self.i18n.engine_update_backup(path.display().to_string()))
+                    }
+                    None => lines.push(self.i18n.engine_update_no_backup()),
                 }
-                lines.push(
-                    "сейчас работает старый образ: новый заработает при следующем запуске"
-                        .to_string(),
-                );
-                self.record_note(format!("обновление {version}"), lines, started_at, duration);
+                lines.push(self.i18n.engine_update_running_old());
+                let note = self.i18n.engine_update_note(version.to_string());
+                self.record_note(note, lines, started_at, duration);
                 self.publish_update();
             }
             UpdateEvent::Failed {
@@ -2326,20 +2365,21 @@ impl Engine {
                 let was_downloading = matches!(self.update.phase, UpdatePhase::Downloading { .. });
                 self.update_job = UpdateJob::Idle;
                 self.update.phase = UpdatePhase::Idle;
-                self.update.error = Some(error.to_string());
+                let described = error.describe(&self.i18n);
+                self.update.error = Some(described.clone());
                 if was_downloading {
                     // A transfer that died is worth a line; a check that could not answer already
                     // has one, and the console is not a place for the same sentence twice.
-                    self.record_note(display, vec![error.to_string()], started_at, duration);
+                    self.record_note(display, vec![described], started_at, duration);
                 } else {
-                    self.note(&error.to_string());
+                    self.note(&described);
                 }
                 self.publish_update();
             }
             UpdateEvent::Cancelled => {
                 self.update_job = UpdateJob::Idle;
                 self.update.phase = UpdatePhase::Idle;
-                self.note("загрузка обновления отменена");
+                self.note(&self.i18n.engine_update_cancelled());
                 self.publish_update();
             }
         }
@@ -2363,7 +2403,7 @@ impl Engine {
             (Some(release), Some(installed)) => {
                 update::describe_download_call(release, &installed.staging_path())
             }
-            _ => "curl (обновление)".to_string(),
+            _ => self.i18n.engine_update_curl_fallback(),
         }
     }
 
@@ -2513,6 +2553,8 @@ esac
             config,
             tray_available: false,
             tray: None,
+            // The tests assert on the English wording, which is the source language.
+            locale: Locale::SOURCE,
             program: program.to_string_lossy().into_owned(),
             route: Arc::clone(&route) as Arc<dyn RouteProbe>,
             // Not a release, not an AppImage, and no automatic check inside a test's lifetime: a
@@ -2635,17 +2677,17 @@ esac
         let mut transcript = String::new();
         while Instant::now() < deadline {
             transcript = handle.bus().lock().unwrap().transcript();
-            if transcript.contains("connect при старте пропущен") {
+            if transcript.contains("startup connect skipped") {
                 break;
             }
             thread::sleep(Duration::from_millis(20));
         }
         assert!(
-            transcript.contains("connect при старте пропущен"),
+            transcript.contains("startup connect skipped"),
             "the skip is recorded where the user can read it: {transcript}"
         );
         assert!(
-            transcript.contains("уже подключено: NL#818"),
+            transcript.contains("already connected: NL#818"),
             "and it says what the CLI reported: {transcript}"
         );
 
@@ -2674,7 +2716,7 @@ esac
             bus.iter().any(|invocation| !invocation.kind.is_protonvpn()
                 && invocation
                     .command_line()
-                    .contains("connect при старте пропущен")),
+                    .contains("startup connect skipped")),
             "{:?}",
             bus.iter()
                 .map(|invocation| (invocation.kind, invocation.command_line()))
@@ -2825,7 +2867,7 @@ esac
     /// The bug this pins, measured against the real CLI: `protonvpn signin` prints `Password: `
     /// with **no trailing newline** and then blocks. A reader that only forwards complete lines
     /// forwards nothing, the engine never sees the prompt, the password is never written, and the
-    /// window sits at "работаю" forever. The user cannot get in and cannot get out.
+    /// console bar sits at "working" forever. The user cannot get in and cannot get out.
     #[test]
     fn a_login_prompt_without_a_newline_is_seen_answered_and_kept_out_of_the_console() {
         let dir = TempDir::new("signin-prompt");
@@ -3294,9 +3336,9 @@ esac
 
         let transcript = handle.bus().lock().unwrap().transcript();
         assert!(transcript.contains("SOCKS5"), "{transcript}");
-        assert!(transcript.contains("слушает"), "{transcript}");
-        assert!(transcript.contains("маршрут подтверждён"), "{transcript}");
-        assert!(transcript.contains("закрыт"), "{transcript}");
+        assert!(transcript.contains("listening:"), "{transcript}");
+        assert!(transcript.contains("route proven:"), "{transcript}");
+        assert!(transcript.contains("closed:"), "{transcript}");
     }
 
     /// A minimal SOCKS5 client: greeting, CONNECT to `destination`, and the reply code. Enough to
@@ -3444,7 +3486,7 @@ esac
         let GateState::Closed(Closed::NotListening { detail }) = refused.socks5.gate.state() else {
             unreachable!("just matched")
         };
-        assert!(detail.contains("не является локальным"), "{detail}");
+        assert!(detail.contains("is not local"), "{detail}");
     }
 
     #[test]
@@ -3470,6 +3512,7 @@ esac
             config,
             tray_available: false,
             tray: None,
+            locale: Locale::SOURCE,
             program: dir
                 .path()
                 .join("definitely-not-here")
@@ -3489,12 +3532,12 @@ esac
         let mut text = String::new();
         while Instant::now() < deadline {
             text = handle.bus().lock().unwrap().transcript();
-            if text.contains("не удалось запустить") {
+            if text.contains("could not start") {
                 break;
             }
             thread::sleep(Duration::from_millis(20));
         }
-        assert!(text.contains("не удалось запустить"), "{text}");
+        assert!(text.contains("could not start"), "{text}");
         // And the state is still `Unknown`: the CLI never said anything, so we invent nothing.
         assert_eq!(
             handle.snapshot().state.connection.value,
@@ -3527,6 +3570,8 @@ esac
             config,
             tray_available: false,
             tray: None,
+            // The tests assert on the English wording, which is the source language.
+            locale: Locale::SOURCE,
             program: program.to_string_lossy().into_owned(),
             route: test_route(LAN) as Arc<dyn RouteProbe>,
             version,
@@ -3605,7 +3650,7 @@ esac
             text.contains("releases/latest/download/SHA256SUMS"),
             "{text}"
         );
-        assert!(text.contains("последний релиз: 0.1.21"), "{text}");
+        assert!(text.contains("latest release: 0.1.21"), "{text}");
 
         // And that the release page was asked is written down, so the next start does not ask
         // again a minute later.
@@ -3643,7 +3688,7 @@ esac
         assert!(!installed.staging_path().exists());
 
         let text = handle.bus().lock().unwrap().transcript();
-        assert!(text.contains("заработает при следующем запуске"), "{text}");
+        assert!(text.contains("takes effect at the next start"), "{text}");
 
         assert!(handle.shutdown(Duration::from_secs(5)));
     }
@@ -3697,7 +3742,7 @@ esac
         assert!(matches!(shared.update.phase, UpdatePhase::Idle));
         // Not a console line: nothing was executed. Our own remark, which is what a note is for.
         let note = shared.note.clone().unwrap_or_default();
-        assert!(note.contains("не AppImage"), "{note}");
+        assert!(note.contains("not an AppImage"), "{note}");
 
         assert!(handle.shutdown(Duration::from_secs(5)));
     }

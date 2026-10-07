@@ -10,6 +10,7 @@
 //! to compare itself with, and inventing a version for it would have it replace itself with the
 //! latest release.
 
+use protonvpn_core::i18n::I18n;
 use protonvpn_core::update::Version;
 
 /// The raw string the build script baked in, empty when there was none.
@@ -32,10 +33,13 @@ pub fn cli_line() -> String {
 }
 
 /// For the settings page, where there is room to say why the number is missing.
-pub fn label() -> &'static str {
+///
+/// A version number is data and is never translated; the sentence that replaces it when there is
+/// no number is ours.
+pub fn label(i18n: &I18n) -> String {
     if BAKED.is_empty() {
-        "сборка не из релиза"
+        i18n.chrome_version_unversioned()
     } else {
-        BAKED
+        BAKED.to_string()
     }
 }

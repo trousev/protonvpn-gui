@@ -27,6 +27,7 @@
 
 pub mod config;
 pub mod engine;
+pub mod i18n;
 pub mod interpreter;
 pub mod launcher;
 pub mod logbus;
@@ -41,5 +42,6 @@ pub mod socks5;
 pub mod update;
 
 pub use engine::{EngineHandle, EngineOptions, Request, TrayPresenter, TrayView};
+pub use i18n::{I18n, Locale};
 pub use launcher::Intent;
 pub use model::{AppState, ConnectionStatus, RunnerStatus};

@@ -13,6 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use protonvpn_core::i18n::{I18n, Locale};
 use protonvpn_core::pty;
 
 const DEFAULT_OUT_DIR: &str = "crates/protonvpn-core/tests/fixtures";
@@ -158,7 +159,10 @@ fn main() -> ExitCode {
     let invocation = match pty::run(&opts.argv, opts.cols, opts.rows) {
         Ok(i) => i,
         Err(e) => {
-            eprintln!("capture failed: {e}");
+            // A developer's tool, not the product: it speaks the source language, because whoever
+            // runs it is reading a terminal, not a window, and there is no locale to consult.
+            let i18n = I18n::new(Locale::SOURCE);
+            eprintln!("capture failed: {}", e.describe(&i18n));
             return ExitCode::FAILURE;
         }
     };

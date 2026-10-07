@@ -21,6 +21,7 @@ use ksni::menu::{MenuItem, StandardItem};
 #[cfg(test)]
 use protonvpn_core::engine::TrayUpdate;
 use protonvpn_core::engine::TrayView;
+use protonvpn_core::i18n::I18n;
 use protonvpn_core::model::ConnectionStatus;
 #[cfg(test)]
 use protonvpn_core::update::Version;
@@ -66,7 +67,7 @@ const STRIKE_SLOPE: f32 = 1.0;
 pub enum TrayCommand {
     Show,
     /// Open the window on the update, rather than on whatever page it was left on: the menu item
-    /// said "обновление 0.1.43", and a click that lands somewhere else is a click that lied.
+    /// said "Update 0.1.43", and a click that lands somewhere else is a click that lied.
     ShowUpdate,
     Connect,
     Disconnect,
@@ -76,6 +77,18 @@ pub enum TrayCommand {
 pub struct ProtonTray {
     tx: Sender<TrayCommand>,
     view: TrayView,
+    /// The tray's own catalogue. It lives on its own thread, so it cannot borrow the window's; it
+    /// is swapped whenever [`TrayView::language`] says the language has moved on.
+    i18n: I18n,
+}
+
+impl ProtonTray {
+    /// A tray item together with the catalogue it speaks through. The language is taken from the
+    /// view, which is the only thing that knows it at this point.
+    fn new(tx: Sender<TrayCommand>, view: TrayView) -> Self {
+        let i18n = I18n::new(view.language);
+        Self { tx, view, i18n }
+    }
 }
 
 impl ksni::Tray for ProtonTray {
@@ -84,7 +97,9 @@ impl ksni::Tray for ProtonTray {
     }
 
     fn title(&self) -> String {
-        "Proton VPN".to_string()
+        // The brand: the same words in every language, but still read from the catalogue, so that
+        // "it is never translated" is a decision rather than an accident (i18n/en/chrome.ftl).
+        self.i18n.app_name()
     }
 
     /// An icon generated here rather than named from a theme: on a minimal desktop there may be no
@@ -97,7 +112,11 @@ impl ksni::Tray for ProtonTray {
         ksni::ToolTip {
             icon_name: String::new(),
             icon_pixmap: vec![status_icon(&self.view.status)],
-            title: format!("Proton VPN · {}", self.view.status.label()),
+            title: format!(
+                "{} · {}",
+                self.i18n.app_name(),
+                self.i18n.connection_label(&self.view.status)
+            ),
             description: match &self.view.detail {
                 Some(detail) => format!("{detail}\n{}", self.view.age_text),
                 None => self.view.age_text.clone(),
@@ -113,7 +132,11 @@ impl ksni::Tray for ProtonTray {
         let connected = self.view.status.is_connected();
         let mut items: Vec<MenuItem<Self>> = vec![
             StandardItem {
-                label: format!("Статус: {}", self.view.status.label()),
+                // The status word comes from the catalogue too, and may legitimately be the same
+                // in the status chip and here — one place decides what "connected" is called.
+                label: self
+                    .i18n
+                    .tray_status(self.i18n.connection_label(&self.view.status)),
                 enabled: false,
                 ..Default::default()
             }
@@ -126,7 +149,7 @@ impl ksni::Tray for ProtonTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: "Подключиться".into(),
+                label: self.i18n.tray_connect(),
                 enabled: !connected,
                 icon_name: "network-vpn".into(),
                 activate: Box::new(|tray: &mut Self| {
@@ -136,7 +159,7 @@ impl ksni::Tray for ProtonTray {
             }
             .into(),
             StandardItem {
-                label: "Отключиться".into(),
+                label: self.i18n.tray_disconnect(),
                 enabled: connected,
                 icon_name: "network-offline".into(),
                 activate: Box::new(|tray: &mut Self| {
@@ -147,7 +170,7 @@ impl ksni::Tray for ProtonTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: "Открыть окно".into(),
+                label: self.i18n.tray_show_window(),
                 icon_name: "window-new".into(),
                 activate: Box::new(|tray: &mut Self| {
                     let _ = tray.tx.send(TrayCommand::Show);
@@ -156,7 +179,7 @@ impl ksni::Tray for ProtonTray {
             }
             .into(),
             StandardItem {
-                label: "Выход".into(),
+                label: self.i18n.tray_quit(),
                 icon_name: "application-exit".into(),
                 activate: Box::new(|tray: &mut Self| {
                     let _ = tray.tx.send(TrayCommand::Quit);
@@ -170,10 +193,11 @@ impl ksni::Tray for ProtonTray {
         // interrupt (`docs/architecture.md` §9, §14). It says which of the two true things it is —
         // ready and waiting for a restart, or merely available.
         if let Some(update) = &self.view.update {
+            let version = update.version.to_string();
             let label = if update.applied {
-                format!("Обновление {} — перезапустите", update.version)
+                self.i18n.tray_update_applied(version)
             } else {
-                format!("Обновление {}", update.version)
+                self.i18n.tray_update_available(version)
             };
             items.insert(
                 items.len() - 1,
@@ -207,18 +231,31 @@ impl TrayPresenter {
 
 impl protonvpn_core::engine::TrayPresenter for TrayPresenter {
     fn update(&self, view: TrayView) {
-        self.handle.update(|tray: &mut ProtonTray| tray.view = view);
+        self.handle.update(|tray: &mut ProtonTray| {
+            if tray.i18n.locale() != view.language {
+                tray.i18n = I18n::new(view.language);
+            }
+            tray.view = view;
+        });
     }
 }
 
 /// Starts the tray. `None` means there is no StatusNotifierItem host — the caller must then keep
 /// the window reachable rather than hiding it.
 pub fn spawn(tx: Sender<TrayCommand>, view: TrayView) -> Option<TrayPresenter> {
-    let tray = ProtonTray { tx, view };
+    // The language is remembered before the item is built: `spawn` consumes it, and the one place
+    // that has to speak after that is the failure below.
+    let language = view.language;
+    let tray = ProtonTray::new(tx, view);
     match tray.spawn() {
         Ok(handle) => Some(TrayPresenter { handle }),
         Err(error) => {
-            eprintln!("protonvpn-gui: системный трей недоступен: {error}");
+            // A second catalogue, built only on this path: a `FluentBundle` is `Send` but not
+            // `Sync`, and the tray's own went with the item.
+            eprintln!(
+                "{}",
+                I18n::new(language).tray_unavailable(error.to_string())
+            );
             None
         }
     }
@@ -324,12 +361,26 @@ mod tests {
     use super::*;
     // The trait methods (`id`, `menu`, `tool_tip`) are only callable with it in scope.
     use ksni::Tray as _;
+    use protonvpn_core::i18n::Locale;
+
+    /// A tray item with a channel nobody reads: these tests assert on what the menu says, not on
+    /// what a click sends.
+    fn tray(view: TrayView) -> ProtonTray {
+        ProtonTray::new(std::sync::mpsc::channel().0, view)
+    }
 
     fn view(status: ConnectionStatus) -> TrayView {
+        view_in(Locale::SOURCE, status)
+    }
+
+    /// A view in a chosen language, age line included: the engine composes that line before the
+    /// tray ever sees it, so a Russian view with an English age would be a fixture, not a state.
+    fn view_in(language: Locale, status: ConnectionStatus) -> TrayView {
         TrayView {
             status,
+            language,
             detail: None,
-            age_text: "updated just now".into(),
+            age_text: I18n::new(language).age_text(std::time::Duration::ZERO),
             update: None,
         }
     }
@@ -447,9 +498,10 @@ mod tests {
 
         // Every other status keeps the whole shield, the error included: "off" is the only state
         // that is ours to cut out, and an error is not the same thing as the tunnel being down.
+        // The error text is the CLI's own and is data, so its language does not matter here.
         for status in [
             ConnectionStatus::Connecting,
-            ConnectionStatus::Error("отказано".into()),
+            ConnectionStatus::Error("denied".into()),
             ConnectionStatus::Unknown,
         ] {
             assert_eq!(silhouette(&status_icon(&status)), whole, "{status:?}");
@@ -466,29 +518,24 @@ mod tests {
 
     #[test]
     fn the_tooltip_says_what_is_known_and_how_old_it_is() {
-        let tray = ProtonTray {
-            tx: std::sync::mpsc::channel().0,
-            view: TrayView {
-                status: ConnectionStatus::Connected(Default::default()),
-                detail: Some("NL#818 · Amsterdam, Netherlands".into()),
-                age_text: "updated 3 mins ago".into(),
-                update: None,
-            },
-        };
+        let tray = tray(TrayView {
+            status: ConnectionStatus::Connected(Default::default()),
+            language: Locale::SOURCE,
+            detail: Some("NL#818 · Amsterdam, Netherlands".into()),
+            age_text: "updated 3 mins ago".into(),
+            update: None,
+        });
         let tooltip = tray.tool_tip();
-        assert!(tooltip.title.contains("подключено"));
+        assert_eq!(tooltip.title, "Proton VPN · Connected");
         assert!(tooltip.description.contains("NL#818"));
         assert!(tooltip.description.contains("updated 3 mins ago"));
         // The tray never mentions the runner: that is the window's business.
-        assert!(!tooltip.description.contains("работаю"));
+        assert!(!tooltip.description.contains("working"));
     }
 
     #[test]
     fn the_menu_offers_connect_disconnect_show_and_quit() {
-        let tray = ProtonTray {
-            tx: std::sync::mpsc::channel().0,
-            view: view(ConnectionStatus::Disconnected),
-        };
+        let tray = tray(view(ConnectionStatus::Disconnected));
         let labels: Vec<String> = tray
             .menu()
             .iter()
@@ -497,10 +544,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(labels.iter().any(|l| l.contains("Подключиться")));
-        assert!(labels.iter().any(|l| l.contains("Отключиться")));
-        assert!(labels.iter().any(|l| l.contains("Открыть окно")));
-        assert!(labels.iter().any(|l| l.contains("Выход")));
+        assert!(labels.iter().any(|l| l.contains("Connect")));
+        assert!(labels.iter().any(|l| l.contains("Disconnect")));
+        assert!(labels.iter().any(|l| l.contains("Show window")));
+        assert!(labels.iter().any(|l| l.contains("Quit")));
     }
 
     fn labels(tray: &ProtonTray) -> Vec<String> {
@@ -515,54 +562,78 @@ mod tests {
 
     #[test]
     fn an_update_is_a_menu_item_that_says_which_of_the_two_things_it_is() {
-        let available = ProtonTray {
-            tx: std::sync::mpsc::channel().0,
-            view: TrayView {
-                update: Some(TrayUpdate {
-                    version: Version::parse("0.1.43").unwrap(),
-                    applied: false,
-                }),
-                ..view(ConnectionStatus::Disconnected)
-            },
-        };
+        let available = tray(TrayView {
+            update: Some(TrayUpdate {
+                version: Version::parse("0.1.43").unwrap(),
+                applied: false,
+            }),
+            ..view(ConnectionStatus::Disconnected)
+        });
         let available_labels = labels(&available);
         assert!(
-            available_labels.iter().any(|l| l == "Обновление 0.1.43"),
+            available_labels.iter().any(|l| l == "Update 0.1.43"),
             "{available_labels:?}"
         );
-        // Above "Выход", and never instead of it.
-        assert_eq!(available_labels.last().map(String::as_str), Some("Выход"));
+        // Above "Quit", and never instead of it.
+        assert_eq!(available_labels.last().map(String::as_str), Some("Quit"));
 
-        let applied = ProtonTray {
-            tx: std::sync::mpsc::channel().0,
-            view: TrayView {
-                update: Some(TrayUpdate {
-                    version: Version::parse("0.1.43").unwrap(),
-                    applied: true,
-                }),
-                ..view(ConnectionStatus::Disconnected)
-            },
-        };
+        let applied = tray(TrayView {
+            update: Some(TrayUpdate {
+                version: Version::parse("0.1.43").unwrap(),
+                applied: true,
+            }),
+            ..view(ConnectionStatus::Disconnected)
+        });
         let applied_labels = labels(&applied);
         assert!(
-            applied_labels.iter().any(|l| l.contains("перезапустите")),
+            applied_labels
+                .iter()
+                .any(|l| l.contains("restart to apply")),
             "{applied_labels:?}"
         );
 
         // And nothing at all when there is nothing to say.
-        let quiet = labels(&ProtonTray {
-            tx: std::sync::mpsc::channel().0,
-            view: view(ConnectionStatus::Disconnected),
-        });
-        assert!(!quiet.iter().any(|l| l.contains("Обновление")), "{quiet:?}");
+        let quiet = labels(&tray(view(ConnectionStatus::Disconnected)));
+        assert!(!quiet.iter().any(|l| l.contains("Update")), "{quiet:?}");
+    }
+
+    /// The tray names the brand, and it is read from the catalogue like every other word — so a
+    /// build whose catalogue were short would say so here rather than inventing a title.
+    #[test]
+    fn the_tray_title_is_the_catalogue_brand() {
+        let tray = tray(view(ConnectionStatus::Unknown));
+        assert_eq!(tray.title(), I18n::new(Locale::SOURCE).app_name());
+        assert_eq!(tray.title(), "Proton VPN");
+    }
+
+    /// The menu in another language: translated, not copied. No Cyrillic literal is pinned here —
+    /// wording belongs to the catalogue — so the test says what it can prove without it: every
+    /// item moves, and the words that are the CLI's or Proton's own do not.
+    #[test]
+    fn the_menu_is_translated_and_not_copied() {
+        let russian = Locale::from_id("ru").unwrap();
+        let english = labels(&tray(view(ConnectionStatus::Disconnected)));
+        let translated = labels(&tray(view_in(russian, ConnectionStatus::Disconnected)));
+
+        assert_eq!(english.len(), translated.len());
+        for (en, ru) in english.iter().zip(&translated) {
+            assert_ne!(en, ru, "not translated: {en}");
+        }
+        // The status line is the status chip's own word, so it moves with it rather than being
+        // spelled a second time in the tray.
+        let i18n = I18n::new(russian);
+        assert_eq!(
+            translated.first().map(String::as_str),
+            Some(
+                i18n.tray_status(i18n.connection_label(&ConnectionStatus::Disconnected))
+                    .as_str()
+            )
+        );
     }
 
     #[test]
     fn the_tray_id_is_ours_and_never_protons() {
-        let tray = ProtonTray {
-            tx: std::sync::mpsc::channel().0,
-            view: view(ConnectionStatus::Unknown),
-        };
+        let tray = tray(view(ConnectionStatus::Unknown));
         assert_eq!(tray.id(), "protonvpn-gui");
         assert_ne!(tray.id(), "proton.vpn.app.gtk");
     }

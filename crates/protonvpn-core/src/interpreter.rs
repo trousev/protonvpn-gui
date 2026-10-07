@@ -13,6 +13,7 @@
 
 use std::time::SystemTime;
 
+use crate::i18n::I18n;
 use crate::logbus::{Invocation, InvocationKind, LogEvent};
 use crate::model::{
     Account, AppState, ConnectedInfo, ConnectionStatus, InvocationId, Observation, PortForwarding,
@@ -23,7 +24,16 @@ use crate::parse;
 ///
 /// `record` is the invocation the event belongs to, as the log bus holds it — that is where the
 /// argv and the accumulated output come from, so the reducer itself stays free of I/O.
-pub fn interpret(state: AppState, event: &LogEvent, record: Option<&Invocation>) -> AppState {
+///
+/// `i18n` is the one thing the reducer cannot derive: a failing command that printed no error line
+/// of its own still has to be turned into a sentence, and that sentence is shown as the connection
+/// status. Everything else here is a fact the CLI stated.
+pub fn interpret(
+    state: AppState,
+    event: &LogEvent,
+    record: Option<&Invocation>,
+    i18n: &I18n,
+) -> AppState {
     let mut state = state;
 
     match event {
@@ -39,7 +49,7 @@ pub fn interpret(state: AppState, event: &LogEvent, record: Option<&Invocation>)
             id, exit_code, at, ..
         } => {
             if let Some(record) = record {
-                on_finished(&mut state, record, *id, *exit_code, *at);
+                on_finished(&mut state, record, *id, *exit_code, *at, i18n);
             }
         }
     }
@@ -104,6 +114,7 @@ fn on_finished(
     id: InvocationId,
     exit_code: Option<u32>,
     at: SystemTime,
+    i18n: &I18n,
 ) {
     if record.kind == InvocationKind::Note {
         return;
@@ -170,14 +181,13 @@ fn on_finished(
                 // The error line, if the CLI printed one, was already handled above; a silent
                 // failure must not leave the UI claiming a connection.
                 if !matches!(state.connection.value, ConnectionStatus::Error(_)) {
-                    state.connection = Observation::at(
-                        ConnectionStatus::Error(format!(
-                            "`{}` завершилась с кодом {}",
-                            record.command_line(),
-                            exit_code.unwrap_or_default()
-                        )),
-                        at,
+                    // Our own sentence, and the only one the status chip gets when the CLI said
+                    // nothing: the command line and the exit code inside it are data.
+                    let message = i18n.core_connect_exit_code(
+                        record.command_line(),
+                        exit_code.unwrap_or_default() as i64,
                     );
+                    state.connection = Observation::at(ConnectionStatus::Error(message), at);
                 }
                 state.port_forwarding = Observation::at(PortForwarding::Idle, at);
                 return;
@@ -233,9 +243,9 @@ pub fn subcommand(argv: &[String]) -> Option<&str> {
 ///
 /// The pure [`interpret`] remains the definition; this exists so the engine can fold a line into
 /// the state without cloning it (the country list is a few hundred entries).
-pub fn apply(state: &mut AppState, event: &LogEvent, record: Option<&Invocation>) {
+pub fn apply(state: &mut AppState, event: &LogEvent, record: Option<&Invocation>, i18n: &I18n) {
     let owned = std::mem::take(state);
-    *state = interpret(owned, event, record);
+    *state = interpret(owned, event, record, i18n);
 }
 
 /// What the CLI is asking for on the PTY.
@@ -306,7 +316,8 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             at,
         };
-        let mut state = interpret(state, &started, bus.get(id));
+        let i18n = english();
+        let mut state = interpret(state, &started, bus.get(id), &i18n);
         for line in output.lines() {
             let text = line.trim_end_matches('\r').to_string();
             let event = LogEvent::Line {
@@ -317,7 +328,7 @@ mod tests {
                 },
             };
             bus.push_line(id, text, SystemTime::now());
-            state = interpret(state, &event, bus.get(id));
+            state = interpret(state, &event, bus.get(id), &i18n);
         }
         let finished = LogEvent::Finished {
             id,
@@ -331,7 +342,12 @@ mod tests {
             std::time::Duration::from_secs(1),
             SystemTime::now(),
         );
-        interpret(state, &finished, bus.get(id))
+        interpret(state, &finished, bus.get(id), &i18n)
+    }
+
+    /// The source language, which is what every test but the two about Russian expects.
+    fn english() -> I18n {
+        I18n::new(crate::i18n::Locale::SOURCE)
     }
 
     fn connected() -> State {
@@ -572,7 +588,7 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             at,
         };
-        let state = interpret(AppState::default(), &event, bus.get(id));
+        let state = interpret(AppState::default(), &event, bus.get(id), &english());
         assert_eq!(state.connection.value, ConnectionStatus::Connecting);
     }
 
@@ -598,7 +614,7 @@ mod tests {
             at,
         };
         let before = AppState::default();
-        let after = interpret(before.clone(), &event, bus.get(id));
+        let after = interpret(before.clone(), &event, bus.get(id), &english());
         assert_eq!(before, after);
     }
 

@@ -27,6 +27,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
+use protonvpn_core::i18n::{I18n, Locale};
 use protonvpn_core::update::{self, Finding, Installed, Release, Version};
 
 /// The release these live checks are written against.
@@ -50,7 +51,10 @@ fn the_release_page_answers_the_real_question() {
     match finding {
         // A release whose image cannot be installed from still has to say *why*, and the reason
         // comes from the file rather than from this test.
-        Finding::Nothing(why) => assert!(why.contains("SHA256SUMS"), "{why}"),
+        Finding::Nothing(why) => {
+            let why = why.describe(&I18n::new(Locale::SOURCE));
+            assert!(why.contains("SHA256SUMS"), "{why}");
+        }
         Finding::Release(release) => {
             assert!(release.sha256.len() == 64, "{release:?}");
             println!("installable release: {release:?}");

@@ -2,8 +2,11 @@
 Type=Application
 Version=1.0
 Name=Proton VPN GUI
+Name[ru]=Proton VPN GUI
 GenericName=VPN client
+GenericName[ru]=VPN-клиент
 Comment=Console-first wrapper around the official protonvpn CLI
+Comment[ru]=Консольная обёртка над официальным CLI protonvpn
 Exec=protonvpn-gui
 Icon=protonvpn-gui
 Terminal=false

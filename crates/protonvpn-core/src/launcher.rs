@@ -7,6 +7,7 @@
 //! The argv strings live here rather than at the call sites so there is exactly one place that
 //! knows the CLI's spelling of a flag, and one place to test it.
 
+use crate::i18n::I18n;
 use crate::model::ConnectTarget;
 
 /// What the user asked for.
@@ -117,18 +118,19 @@ impl Intent {
     }
 
     /// Short human label for buttons and logs.
-    pub fn label(&self) -> String {
+    pub fn label(&self, i18n: &I18n) -> String {
         match self {
-            Self::Connect(target) => format!("подключение: {}", target.describe()),
-            Self::Disconnect => "отключение".to_string(),
-            Self::RefreshStatus => "статус".to_string(),
-            Self::ListCountries => "список стран".to_string(),
-            Self::ListCities { country } => format!("города: {country}"),
-            Self::ListSettings => "настройки".to_string(),
+            Self::Connect(target) => i18n.launcher_connect(i18n.target_label(target)),
+            Self::Disconnect => i18n.launcher_disconnect(),
+            Self::RefreshStatus => i18n.launcher_status(),
+            Self::ListCountries => i18n.launcher_list_countries(),
+            Self::ListCities { country } => i18n.launcher_list_cities(country),
+            Self::ListSettings => i18n.launcher_list_settings(),
+            // A key and its value are the CLI's own spelling of a setting: data, not prose.
             Self::SetSetting { key, value, .. } => format!("{key} = {value}"),
-            Self::AccountInfo => "аккаунт".to_string(),
-            Self::SignIn { username } => format!("вход: {username}"),
-            Self::SignOut => "выход".to_string(),
+            Self::AccountInfo => i18n.launcher_account(),
+            Self::SignIn { username } => i18n.launcher_sign_in(username),
+            Self::SignOut => i18n.launcher_sign_out(),
         }
     }
 
