@@ -127,6 +127,7 @@ pub(crate) fn sidebar(app: &App) -> Element<'_, Message> {
             }),
             status_line,
             account,
+            quit_button(app, Length::Fill),
         ]
         .spacing(14)
         .padding(Padding::from([16, 14])),
@@ -146,6 +147,23 @@ pub(crate) fn sidebar(app: &App) -> Element<'_, Message> {
     ]
     .height(Length::Fill)
     .into()
+}
+
+/// The window's own way out.
+///
+/// The tray has a "Quit" of its own, but the tray is not always there: GNOME without the
+/// AppIndicator extension has no StatusNotifierItem host at all, and a panel that has not appeared
+/// yet is not one either. Without this button the only exit in that case was a signal from outside
+/// — the close button refuses on purpose, because hiding the window would hide the whole
+/// application into nothing (`docs/architecture.md` §9). One word, from the same catalogue entry
+/// the tray menu uses, so the two can never disagree about what quitting is called.
+pub(crate) fn quit_button<'a>(app: &'a App, width: Length) -> Element<'a, Message> {
+    button(text(app.i18n.tray_quit()).size(12))
+        .padding(Padding::from([6, 10]))
+        .width(width)
+        .style(theme::ghost(theme::TEXT_MUTED, false))
+        .on_press(Message::Quit)
+        .into()
 }
 
 /// The little accent rule that marks the current page.

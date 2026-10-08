@@ -307,9 +307,6 @@ pub struct Shared {
     pub config: Config,
     pub pending_prompt: Option<PendingPrompt>,
     pub ui_commands: VecDeque<UiCommand>,
-    /// Whether a StatusNotifierItem host was found. On GNOME without the AppIndicator extension
-    /// there is no tray, and the window must not hide into nothing.
-    pub tray_available: bool,
     /// Our own last remark: a failed config write, a lost lease. Not a verdict about the CLI.
     pub note: Option<String>,
     /// Secrets are never published; this only says whether we are holding one.
@@ -392,7 +389,6 @@ pub struct EngineOptions {
     pub cwd: PathBuf,
     pub store: ConfigStore,
     pub config: Config,
-    pub tray_available: bool,
     pub tray: Option<Box<dyn TrayPresenter>>,
     /// argv[0]. It is `protonvpn` and stays `protonvpn`: this is a test seam for driving a
     /// stand-in with no CLI installed, and nothing in the GUI ever sets it to anything else.
@@ -425,7 +421,6 @@ impl EngineOptions {
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             store,
             config,
-            tray_available: false,
             tray: None,
             program: "protonvpn".to_string(),
             route: Arc::new(route::Kernel),
@@ -463,7 +458,6 @@ pub fn spawn(options: EngineOptions) -> EngineHandle {
         config: options.config.clone(),
         pending_prompt: None,
         ui_commands: VecDeque::new(),
-        tray_available: options.tray_available,
         note: None,
         has_secrets: false,
         socks5: Socks5View {
@@ -2551,7 +2545,6 @@ esac
             cwd: dir.path().to_path_buf(),
             store: ConfigStore::at(dir.path().join("config.json")),
             config,
-            tray_available: false,
             tray: None,
             // The tests assert on the English wording, which is the source language.
             locale: Locale::SOURCE,
@@ -3510,7 +3503,6 @@ esac
             cwd: dir.path().to_path_buf(),
             store: ConfigStore::at(dir.path().join("config.json")),
             config,
-            tray_available: false,
             tray: None,
             locale: Locale::SOURCE,
             program: dir
@@ -3568,7 +3560,6 @@ esac
             cwd: dir.path().to_path_buf(),
             store: ConfigStore::at(dir.path().join("config.json")),
             config,
-            tray_available: false,
             tray: None,
             // The tests assert on the English wording, which is the source language.
             locale: Locale::SOURCE,

@@ -292,6 +292,17 @@ sending only what is missing and finishing by running the real check. The langua
 desktop (`$LANGUAGE`, `$LC_ALL`, `$LC_MESSAGES`, `$LANG`) and can be pinned in Settings → General.
 Our words are translated; the CLI's bytes are not.
 
+Then two halves of one bug that only a login shows. The tray item was created by a `spawn()` that
+required `org.kde.StatusNotifierWatcher` to have an owner at that instant, and an autostart run is
+routinely up before the shell's panel is — so no item was created and the session had no tray at
+all. The item is now built with `assume_sni_available(true)` and whether a panel has it is read live
+from ksni's own watcher callbacks, so it registers whenever the panel appears; and a run that asked
+to live in the tray waits five seconds for one before it opens the window instead
+([`docs/architecture.md`](docs/architecture.md) §9). The other half is what that state left behind:
+with no tray the close button refuses on purpose, and the notice it showed pointed at a tray menu
+that was not there — so the window now carries its own **Quit**, in the sidebar and on the login
+page, from the same catalogue entry the tray menu uses.
+
 **Next:** a live `signin` run with real credentials (needs a human — the password prompt is
 captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; a live
 SOCKS5 round trip with a real application on the other end of the listener; desktop
@@ -307,6 +318,16 @@ window redraws the same frame, and a fresh start runs the new image. Run headles
 `$HOME`, the application itself performed its scheduled check and wrote `last_check` into its
 config. The repeatable version of all of that is
 `cargo test -p protonvpn-core --test live_update -- --ignored`.
+
+**Verified live** (2026-10-08, the autostart tray race): on a private session bus with a mock
+`org.kde.StatusNotifierWatcher` and a headless `sway`, a watcher that appeared two seconds *after*
+the application was registered by the new build and never by the old one — the old one printed
+`tray-unavailable` and opened a window instead, which is the reported bug reproduced exactly. With
+no watcher at all the window appears after the five-second wait, with the notice in it and its own
+Quit in the sidebar; with the watcher there before the application, no window is ever opened. The
+window was photographed on `sway`'s Xwayland: `xwininfo -root -children` gives the id and
+`ffmpeg -f x11grab -window_id <id>` the picture — grabbing the root window comes back black,
+because rootless Xwayland never composites the children into it.
 
 **Verified live** (2026-09-30, two full rounds): the app connects on start to the configured
 country and the tray reports it, `protonvpn status` agrees, the egress address changes and comes

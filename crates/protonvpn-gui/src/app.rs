@@ -45,6 +45,47 @@ use crate::tray::{self, TrayCommand};
 const TICK: Duration = Duration::from_millis(200);
 const CONSOLE_ID: &str = "console-transcript";
 
+/// How long a start-to-tray run waits for a panel to take the tray item before it opens the window
+/// instead.
+///
+/// Both halves of that are deliberate. "Start minimised" is a promise about the first moment, and
+/// at autostart the shell's StatusNotifierWatcher is routinely up *after* we are — a window that
+/// appeared instantly would break the promise for the sake of a second. But an application that is
+/// neither on a panel nor on screen cannot be quit at all, which is what §9 forbids, so the wait is
+/// bounded and the window is what happens when it runs out.
+const START_IN_TRAY_WAIT: Duration = Duration::from_secs(5);
+
+/// Where a boot puts this run: in a window, in the tray, or in neither *yet*.
+///
+/// The third state is the one worth naming. A run that was asked to live in the tray, at a login
+/// where the shell's panel is later than we are, is neither of the other two for a few seconds —
+/// and the difference between "no window yet" and "no window ever" is a decision, not a delay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowAtBoot {
+    /// The ordinary run: a window, now.
+    Window,
+    /// A run that asked to live in the tray and has a panel: no window, and none is opened.
+    Tray,
+    /// A run that asked to live in the tray and has no panel *yet*: no window for now, and one when
+    /// the wait runs out — because an application that is neither on a panel nor on screen cannot
+    /// be quit at all (§9).
+    WaitForPanel(Instant),
+}
+
+/// What a boot decides, from the two things it depends on: whether the run was asked to live in the
+/// tray, and whether a panel has the item.
+///
+/// A function rather than three lines inside [`App::new`], because the combinations are the whole
+/// of the decision and they are worth pinning: "start minimised *and* a panel is there" means no
+/// window at all, which is not the same answer as "no panel yet".
+fn window_at_boot(start_minimized: bool, attached: bool, now: Instant) -> WindowAtBoot {
+    match (start_minimized, attached) {
+        (false, _) => WindowAtBoot::Window,
+        (true, true) => WindowAtBoot::Tray,
+        (true, false) => WindowAtBoot::WaitForPanel(now + START_IN_TRAY_WAIT),
+    }
+}
+
 pub fn run() -> iced::Result {
     // A **daemon**, not an application, and this is the whole reason: `iced::application` exits
     // when its last window is destroyed, and winit cannot hide a window on Wayland at all
@@ -103,14 +144,15 @@ fn boot() -> (App, Task<Message>) {
 
     // Only now can it be said: the sentence waits for the catalogue, which waits for the config.
     let config_error = config_error.map(|error| error.describe(&i18n));
-    let start_minimized = config.start_minimized;
     // "Connect at startup" connects the *selected connection*, because that is the only thing the
     // app has that means "what should `protonvpn connect` be". It is a request, not a command: the
     // engine checks the CLI's own status first and does nothing when the tunnel is already up.
     let startup_connect = config.connect_at_startup.then(|| selected_target(&config));
 
     // The tray comes first, because whether there *is* one decides whether a start-to-tray run is
-    // possible at all: hiding into nothing is exactly what §9 forbids.
+    // possible at all: hiding into nothing is exactly what §9 forbids. A tray whose panel is late —
+    // the autostart case — is not a tray that is missing: the item exists from here on, and it is
+    // registered whenever the panel appears (`tray::Attachment`).
     let (tray_commands, tray_rx) = std::sync::mpsc::channel::<TrayCommand>();
     let initial_view = TrayView {
         status: protonvpn_core::model::ConnectionStatus::Unknown,
@@ -120,7 +162,6 @@ fn boot() -> (App, Task<Message>) {
         update: None,
     };
     let tray = tray::spawn(tray_commands, initial_view);
-    let tray_available = tray.is_some();
     let presenter = tray.map(Arc::new);
 
     // The window's app id is ours, and must never be `proton.vpn.app.gtk`: the CLI refuses to run
@@ -136,14 +177,12 @@ fn boot() -> (App, Task<Message>) {
         },
         ..Default::default()
     };
-    let start_in_tray = start_minimized && tray_available;
 
     let mut options = EngineOptions::new(store, config.clone());
     // What this build says it is, baked in by the build script (`scripts/version.sh`). The engine
     // compares it against the latest release; a build without one says so instead of guessing.
     options.version = crate::version::current();
     options.locale = locale;
-    options.tray_available = tray_available;
     options.tray = presenter.as_ref().map(|presenter| {
         Box::new(SharedPresenter(Arc::clone(presenter)))
             as Box<dyn protonvpn_core::engine::TrayPresenter>
@@ -151,21 +190,17 @@ fn boot() -> (App, Task<Message>) {
     let engine = protonvpn_core::engine::spawn(options);
 
     let mut app = App::new(engine, config, tray_rx, presenter, window_settings, i18n);
-    app.tray_available = tray_available;
     app.notice = config_error.or(autostart_note).or(entry_note);
 
-    // No window at all when the app is meant to start in the tray: "the app is in the tray
-    // and connected to the configured country, no window" is an exit criterion.
-    let open = if start_in_tray {
-        Task::none()
-    } else {
-        let (id, open) = window::open(app.window_settings.clone());
-        app.window = Some(id);
-        open.map(Message::WindowOpened)
-    };
-
+    // No window at all when the app is meant to live in the tray and a panel has taken the item —
+    // or is still being given its moment to (`App::window_wait_until`, and §9). The startup connect
+    // is not held back by either: the engine starts now, whatever the window is doing.
     let task = Task::batch([
-        open,
+        if app.opens_window_at_boot() {
+            app.open_window()
+        } else {
+            Task::none()
+        },
         match startup_connect {
             Some(target) => Task::done(Message::StartupConnect(target)),
             None => Task::none(),
@@ -566,7 +601,10 @@ pub struct App {
     /// The entries we keep in step with the config. Held rather than rebuilt per call so that the
     /// settings page can ask about them without reading the XDG environment on every frame.
     desktop: Desktop,
-    tray_available: bool,
+    /// Where this run was put at boot — a window, the tray, or a wait to find out. Decided once and
+    /// never revisited: a settings toggle must not close a window somebody is looking at. Only
+    /// [`WindowAtBoot::WaitForPanel`] does anything after the boot, and only in [`App::tick`].
+    window_at_boot: WindowAtBoot,
     window: Option<window::Id>,
     window_settings: window::Settings,
     page: Page,
@@ -606,6 +644,15 @@ impl App {
         let shared = engine.snapshot();
         let mut console = ConsoleModel::default();
         console.refresh(&engine.bus().lock().unwrap_or_else(|p| p.into_inner()));
+        // A run that was asked to live in the tray, with no panel to live in yet: no window is
+        // opened, and the wait is armed. The panel is routinely later than we are at a login, and
+        // hiding into nothing is what §9 forbids — so `tick` opens the window when the wait runs
+        // out, and the notice says why it is there.
+        let boot_window = window_at_boot(
+            config.start_minimized,
+            tray.as_ref().is_some_and(|tray| tray.attached()),
+            Instant::now(),
+        );
         Self {
             i18n,
             socks5_address: config.socks5.address.clone(),
@@ -618,7 +665,7 @@ impl App {
             tray_commands,
             tray,
             desktop: Desktop::default(),
-            tray_available: false,
+            window_at_boot: boot_window,
             window: None,
             window_settings,
             page: Page::Overview,
@@ -660,10 +707,11 @@ impl App {
                 Task::none()
             }
             Message::CloseRequested(id) => {
-                if self.tray_available {
+                if self.tray_available() {
                     // Closing returns to the tray, which is the point of the app existing without
                     // a window. With no tray, hiding would hide it into nothing, so we say why
-                    // instead (§9).
+                    // instead (§9) — and the window now carries its own Quit for the user who
+                    // meant "stop", not "hide".
                     self.window = None;
                     return window::close(id);
                 }
@@ -692,13 +740,11 @@ impl App {
                     None => {
                         // The window was destroyed on close; the tray brings a fresh one back.
                         // The daemon opened nothing by itself, so there is exactly one at a time.
-                        let (id, open) = window::open(self.window_settings.clone());
-                        self.window = Some(id);
-                        Task::batch([open.map(Message::WindowOpened)])
+                        self.open_window()
                     }
                 }
             }
-            Message::HideWindow => match (self.window, self.tray_available) {
+            Message::HideWindow => match (self.window, self.tray_available()) {
                 (Some(id), true) => {
                     self.window = None;
                     window::close(id)
@@ -1099,9 +1145,49 @@ impl App {
         }
     }
 
+    /// Whether a panel has the tray item *now*.
+    ///
+    /// Asked rather than remembered, and that is the fix rather than a style: a panel that appears
+    /// a second after a login, or a shell that restarts mid-session, moves this answer while the
+    /// application runs. `tray::Attachment` is where the answer comes from, and §9 is where the
+    /// rule it serves is written — no tray means the window stays reachable.
+    fn tray_available(&self) -> bool {
+        self.tray.as_ref().is_some_and(|tray| tray.attached())
+    }
+
+    /// Whether this run opens a window by itself at boot. False for every run that was asked to
+    /// live in the tray, whether the panel is there or still being waited for: that one opens its
+    /// window from [`App::tick`], or never.
+    fn opens_window_at_boot(&self) -> bool {
+        matches!(self.window_at_boot, WindowAtBoot::Window)
+    }
+
+    /// Opens the window and remembers its id. A daemon opens nothing by itself, so this is the one
+    /// place a window comes into existence and there is exactly one at a time.
+    fn open_window(&mut self) -> Task<Message> {
+        let (id, open) = window::open(self.window_settings.clone());
+        self.window = Some(id);
+        open.map(Message::WindowOpened)
+    }
+
     /// One beat: take whatever the tray and the engine have produced, and repaint.
     fn tick(&mut self) -> Task<Message> {
         let mut tasks: Vec<Task<Message>> = Vec::new();
+
+        // A start-to-tray run that is still waiting for its panel. The wait ends in exactly one of
+        // two ways and both are decisions, not timeouts: the panel arrives and no window is ever
+        // opened — the promise "start minimised" was about the first moment, and it is kept — or
+        // the wait runs out and the window is opened, because an application that is neither on a
+        // panel nor on screen cannot be quit at all (§9).
+        if let WindowAtBoot::WaitForPanel(deadline) = self.window_at_boot {
+            if self.window.is_some() || self.tray_available() {
+                self.window_at_boot = WindowAtBoot::Tray;
+            } else if Instant::now() >= deadline {
+                self.window_at_boot = WindowAtBoot::Window;
+                self.notice = Some(self.i18n.chrome_notice_no_tray_hide());
+                tasks.push(self.open_window());
+            }
+        }
 
         while let Ok(command) = self.tray_commands.try_recv() {
             match command {
@@ -1571,6 +1657,11 @@ mod tests {
             let _ = views::settings::view(&app);
         }
 
+        // The two surfaces that carry the window's own Quit — the sidebar, which every page sits
+        // in, and the login page, which has no sidebar — build in the same state.
+        let _ = app.shell();
+        let _ = views::login::view(&app);
+
         // The proxy switched on, with a listener the engine has not reported yet: the card reads
         // counters and a gate state that are both empty, and must still render.
         let mut enabled = app.config.clone();
@@ -1746,10 +1837,16 @@ mod tests {
     /// An app whose engine never runs anything — the stand-in program does not exist — and whose
     /// catalogue is English, the language the source messages are written in.
     fn app_with_no_cli(name: &str) -> App {
+        app_with(name, Config::default())
+    }
+
+    /// The same, with a configuration of the test's choosing. `probe_enabled` is forced off: no
+    /// test may reach the network, and no test here needs a `curl` to have run.
+    fn app_with(name: &str, config: Config) -> App {
         let dir = std::env::temp_dir().join(format!("protonvpn-gui-{name}-{}", std::process::id()));
         let config = Config {
             probe_enabled: false,
-            ..Default::default()
+            ..config
         };
         let mut options =
             EngineOptions::new(ConfigStore::at(dir.join("config.json")), config.clone());
@@ -1764,6 +1861,84 @@ mod tests {
             window::Settings::default(),
             I18n::new(Locale::SOURCE),
         )
+    }
+
+    /// The decision a boot makes, in all four combinations — the bug this pins was the third one:
+    /// a run that asked to live in the tray, with a panel already there, still opened its window.
+    #[test]
+    fn a_boot_puts_the_run_in_the_window_or_in_the_tray() {
+        let now = Instant::now();
+        assert_eq!(window_at_boot(false, false, now), WindowAtBoot::Window);
+        assert_eq!(window_at_boot(false, true, now), WindowAtBoot::Window);
+        assert_eq!(window_at_boot(true, true, now), WindowAtBoot::Tray);
+        assert_eq!(
+            window_at_boot(true, false, now),
+            WindowAtBoot::WaitForPanel(now + START_IN_TRAY_WAIT)
+        );
+    }
+
+    /// A run that asked to start in the tray, with no panel to start in yet. The window is *not*
+    /// opened at boot — at autostart the login's shell is routinely later than we are, and "start
+    /// minimised" is a promise about the first moment — but it is opened when the wait runs out,
+    /// because an application that is neither on a panel nor on screen cannot be quit at all. The
+    /// notice is what says why the window is there.
+    #[test]
+    fn a_start_to_tray_run_waits_for_its_panel_and_then_falls_back_to_the_window() {
+        let mut app = app_with(
+            "tray-wait",
+            Config {
+                start_minimized: true,
+                ..Default::default()
+            },
+        );
+        assert!(!app.opens_window_at_boot());
+        assert!(app.window.is_none());
+
+        // The wait has not run out: nothing is opened, and the run is still waiting.
+        let _ = app.update(Message::Tick);
+        assert!(app.window.is_none(), "the window appeared before its time");
+        assert!(matches!(app.window_at_boot, WindowAtBoot::WaitForPanel(_)));
+
+        // The wait runs out with no panel in sight.
+        app.window_at_boot = WindowAtBoot::WaitForPanel(Instant::now() - Duration::from_millis(1));
+        let _ = app.update(Message::Tick);
+        assert!(app.window.is_some(), "the application must be reachable");
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("There is no tray — the window stays open.")
+        );
+        // Once, and not once per beat.
+        assert_eq!(app.window_at_boot, WindowAtBoot::Window);
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.window_at_boot, WindowAtBoot::Window);
+    }
+
+    /// The ordinary run: a window at boot, and no wait to arm.
+    #[test]
+    fn a_run_that_did_not_ask_for_the_tray_opens_its_window_at_boot() {
+        let app = app_with_no_cli("boot-window");
+        assert!(app.opens_window_at_boot());
+        assert_eq!(app.window_at_boot, WindowAtBoot::Window);
+    }
+
+    /// The dead end the window's own Quit exists for. With no tray, closing is refused — hiding
+    /// would hide the whole application into nothing — and the notice that refuses it names a
+    /// "Quit" the window now actually has, in its sidebar and on the login page.
+    #[test]
+    fn closing_with_no_tray_is_refused_and_the_notice_names_a_quit_the_window_has() {
+        let mut app = app_with_no_cli("close-no-tray");
+        assert!(!app.tray_available());
+
+        // A window that exists, as it would after boot.
+        let _ = app.open_window();
+        let id = app.window.expect("the window was opened");
+
+        let _ = app.update(Message::CloseRequested(id));
+        assert_eq!(app.window, Some(id), "the window was closed into nothing");
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("There is no tray to hide the window in. To close the application, use Quit.")
+        );
     }
 
     /// A refused write puts a sentence in the notice bar, and that sentence is the catalogue's.
