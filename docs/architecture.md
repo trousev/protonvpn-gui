@@ -320,6 +320,28 @@ The tray is a **peer view**, not a sub-feature of the window:
 - GNOME without the AppIndicator extension has no tray at all; the app must detect this and stay
   reachable rather than hiding into nothing.
 
+**A tray that is not there yet is not a tray that will never be there.** At autostart the
+application is routinely up before the login's panel is, and a `spawn()` that required
+`org.kde.StatusNotifierWatcher` to have an owner at that instant failed outright — no item was
+created, and the session then had no tray for its whole length. The item is now created with
+`assume_sni_available(true)`, and "is there a tray" comes from ksni's own watcher callbacks
+(`watcher_online` / `watcher_offline`, the second of which also fires *inside* `spawn` when the
+watcher is absent, which is what makes the first answer an honest one). So the item registers
+whenever the panel appears, however long after us that is, and the window's answer to the question
+is live rather than a snapshot taken at boot.
+
+Two consequences, both deliberate:
+
+- **The window always has its own Quit**, in the sidebar and on the login page, from the same
+  catalogue entry the tray menu uses. Without it the no-tray case had exactly one exit: a signal
+  from outside. The close button refuses on purpose, so the notice that refuses it pointed at a
+  tray menu that was not there.
+- **A start-to-tray run waits for its panel** — `START_IN_TRAY_WAIT`, five seconds — and opens the
+  window, with the notice that says so, if the wait runs out. "Start minimised" is a promise about
+  the first moment and hiding into nothing is forbidden; the wait is how both can be true at once.
+  The engine is not held back by it: polling, the startup connect and the update check all begin
+  while the window is still a possibility.
+
 `RunnerStatus` (`жду` / `работаю` / `в очереди`) lives **only in the main window**, in the
 collapsed console bar. Note that it is event-driven — it changes when we launch something, not on
 the 5-minute poll — so it would not actually flicker. Keeping it out of the tray is still the

@@ -177,7 +177,11 @@ fn login_card(app: &App, two_factor: bool) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .height(Length::Fixed(1.0)),
             back,
+            // The window's way out, on this page too: a signed-out run has no sidebar to hold it,
+            // and with no tray the close button is a refusal rather than a way out (§9).
+            super::quit_button(app, Length::Shrink),
         ]
+        .spacing(8)
         .align_y(Alignment::Center),
         text(app.i18n.login_title()).size(24),
         widgets::muted(app.i18n.login_explainer()),

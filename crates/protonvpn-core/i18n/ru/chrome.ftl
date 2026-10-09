@@ -99,11 +99,12 @@ chrome-editor-flag-port-forwarding = Порт-форвардинг
 
 # A notice in the bar across the top of the window. It appears when the window's close button was
 # pressed and there is no StatusNotifierItem host (docs/architecture.md §9): the window cannot be
-# hidden into nothing, so it stays and says so. "Quit" is the tray menu's own item (tray-quit),
-# capitalized here because it names that item.
+# hidden into nothing, so it stays and says so. "Quit" names the window's own button (tray-quit),
+# capitalized because it names that button.
 chrome-notice-no-tray-close = Трея нет, скрывать окно некуда. Закрыть приложение — кнопка «Выход».
 
-# The same situation when hiding was asked for from the tray's own menu. One short line in the
+# The same situation reached from the other end: hiding was asked for from the tray's own menu, or a
+# run that asked to start in the tray waited for a panel that never appeared. One short line in the
 # notice bar.
 chrome-notice-no-tray-hide = Трея нет — окно остаётся открытым.
 

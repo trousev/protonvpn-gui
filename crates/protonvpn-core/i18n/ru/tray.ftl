@@ -15,7 +15,9 @@ tray-disconnect = Отключиться
 # window open it is the only way in.
 tray-show-window = Открыть окно
 
-# The last item of the tray menu. "Quit" is also what the no-tray notice in chrome.ftl points at.
+# The last item of the tray menu — and the window's own Quit, in the sidebar and on the login page,
+# because the tray is not always there and a window whose close button refuses on purpose must
+# still hold a way out (docs/architecture.md §9). One word, in a menu and in two buttons.
 tray-quit = Выход
 
 # The tray menu item for a release that is published but not downloaded yet. $version is the version

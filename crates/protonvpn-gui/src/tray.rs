@@ -13,7 +13,16 @@
 //!
 //! The item never takes the bus name `proton.vpn.app.gtk`: ksni owns
 //! `org.kde.StatusNotifierItem-<pid>-<id>`, and that is the only name we ever hold.
+//!
+//! **A tray that is not there yet is not a tray that will never be there.** At autostart the
+//! application is routinely up before the login's panel is, and a `spawn()` that asked for the
+//! `org.kde.StatusNotifierWatcher` to be present at that instant failed — so the item was never
+//! created and the session had no tray at all. The item is now created with
+//! `assume_sni_available(true)` and its availability is read from ksni's own watcher callbacks:
+//! the item registers whenever the panel appears, however long after us that is.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
 use ksni::blocking::{Handle, TrayMethods};
@@ -74,20 +83,61 @@ pub enum TrayCommand {
     Quit,
 }
 
+/// Whether a StatusNotifierItem host has the item *now* — written on ksni's thread, read on the
+/// window's, and the only thing the window trusts when it decides whether it may hide.
+///
+/// It starts **attached**, which is not optimism. The item is created with
+/// [`TrayMethods::assume_sni_available`], where a missing `org.kde.StatusNotifierWatcher` is not an
+/// error but a [`ksni::Tray::watcher_offline`] callback — and ksni calls that one *inside*
+/// `spawn()`, before it returns. So by the time anything can read this flag, it has already been
+/// told what happened. Every later change arrives as a D-Bus signal on the same thread: a panel
+/// that appears a second after a login is what turns it back on, and a shell that restarts is what
+/// turns it off and on again without the item ever being rebuilt.
+#[derive(Debug)]
+pub struct Attachment {
+    attached: AtomicBool,
+}
+
+impl Attachment {
+    /// Attached until ksni says otherwise — see the type's documentation.
+    fn new() -> Self {
+        Self {
+            attached: AtomicBool::new(true),
+        }
+    }
+
+    pub fn attached(&self) -> bool {
+        // Relaxed: one flag, and no other data is published with it. An answer that is a beat old
+        // is an answer about a panel, and a panel is not a lock.
+        self.attached.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, attached: bool) {
+        self.attached.store(attached, Ordering::Relaxed);
+    }
+}
+
 pub struct ProtonTray {
     tx: Sender<TrayCommand>,
     view: TrayView,
     /// The tray's own catalogue. It lives on its own thread, so it cannot borrow the window's; it
     /// is swapped whenever [`TrayView::language`] says the language has moved on.
     i18n: I18n,
+    /// Where the two watcher callbacks land — see [`Attachment`].
+    attachment: Arc<Attachment>,
 }
 
 impl ProtonTray {
     /// A tray item together with the catalogue it speaks through. The language is taken from the
     /// view, which is the only thing that knows it at this point.
-    fn new(tx: Sender<TrayCommand>, view: TrayView) -> Self {
+    fn new(tx: Sender<TrayCommand>, view: TrayView, attachment: Arc<Attachment>) -> Self {
         let i18n = I18n::new(view.language);
-        Self { tx, view, i18n }
+        Self {
+            tx,
+            view,
+            i18n,
+            attachment,
+        }
     }
 }
 
@@ -126,6 +176,19 @@ impl ksni::Tray for ProtonTray {
 
     fn activate(&mut self, _x: i32, _y: i32) {
         let _ = self.tx.send(TrayCommand::Show);
+    }
+
+    /// The watcher is gone — or was never there, which is the autostart case this whole arrangement
+    /// exists for. The item is kept rather than shut down: a panel that comes up late is the normal
+    /// shape of a login, and ksni announces it when it arrives.
+    fn watcher_offline(&self, _reason: ksni::OfflineReason) -> bool {
+        self.attachment.set(false);
+        true
+    }
+
+    /// The panel's watcher is there, and ksni is about to register the item with it.
+    fn watcher_online(&self) {
+        self.attachment.set(true);
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -220,12 +283,22 @@ impl ksni::Tray for ProtonTray {
 /// Keeps the engine's view in the tray. The engine calls this; the tray thread does the rest.
 pub struct TrayPresenter {
     handle: Handle<ProtonTray>,
+    attachment: Arc<Attachment>,
 }
 
 impl TrayPresenter {
     /// Shuts the tray service down, so the process can exit without a dangling name.
     pub fn shutdown(&self) {
         self.handle.shutdown().wait();
+    }
+
+    /// Whether a panel has the item *now*.
+    ///
+    /// Not the same question as whether one was there when the application started, and the
+    /// difference is the whole of the autostart fix: the answer moves while the app runs, and the
+    /// window asks it every time instead of remembering it (`docs/architecture.md` §9).
+    pub fn attached(&self) -> bool {
+        self.attachment.attached()
     }
 }
 
@@ -240,16 +313,23 @@ impl protonvpn_core::engine::TrayPresenter for TrayPresenter {
     }
 }
 
-/// Starts the tray. `None` means there is no StatusNotifierItem host — the caller must then keep
-/// the window reachable rather than hiding it.
+/// Starts the tray. `None` means the item could not be created at all — no session bus to put it
+/// on, or a watcher that answered with something other than "there is nobody there yet" — and the
+/// caller must then keep the window reachable rather than hiding it. A watcher that is merely
+/// *late* is not that case: see [`Attachment`].
 pub fn spawn(tx: Sender<TrayCommand>, view: TrayView) -> Option<TrayPresenter> {
     // The language is remembered before the item is built: `spawn` consumes it, and the one place
     // that has to speak after that is the failure below.
     let language = view.language;
-    let tray = ProtonTray::new(tx, view);
-    match tray.spawn() {
-        Ok(handle) => Some(TrayPresenter { handle }),
+    let attachment = Arc::new(Attachment::new());
+    let tray = ProtonTray::new(tx, view, Arc::clone(&attachment));
+    // `assume_sni_available`: a watcher that has not appeared yet leaves the item alive and waiting
+    // for it, instead of failing the whole tray. It is what makes an autostart run — up before the
+    // login's panel — end with a tray rather than without one.
+    match tray.assume_sni_available(true).spawn() {
+        Ok(handle) => Some(TrayPresenter { handle, attachment }),
         Err(error) => {
+            attachment.set(false);
             // A second catalogue, built only on this path: a `FluentBundle` is `Send` but not
             // `Sync`, and the tray's own went with the item.
             eprintln!(
@@ -366,7 +446,11 @@ mod tests {
     /// A tray item with a channel nobody reads: these tests assert on what the menu says, not on
     /// what a click sends.
     fn tray(view: TrayView) -> ProtonTray {
-        ProtonTray::new(std::sync::mpsc::channel().0, view)
+        ProtonTray::new(
+            std::sync::mpsc::channel().0,
+            view,
+            Arc::new(Attachment::new()),
+        )
     }
 
     fn view(status: ConnectionStatus) -> TrayView {
@@ -636,5 +720,37 @@ mod tests {
         let tray = tray(view(ConnectionStatus::Unknown));
         assert_eq!(tray.id(), "protonvpn-gui");
         assert_ne!(tray.id(), "proton.vpn.app.gtk");
+    }
+
+    /// The autostart fix in miniature. An item whose watcher has not appeared yet is *not* a tray
+    /// the window may hide in, and the panel that arrives later is what makes it one — which is why
+    /// the window asks this question every time instead of remembering the answer from boot.
+    #[test]
+    fn the_watcher_callbacks_are_what_moves_the_attachment() {
+        let attachment = Arc::new(Attachment::new());
+        let tray = ProtonTray::new(
+            std::sync::mpsc::channel().0,
+            view(ConnectionStatus::Unknown),
+            Arc::clone(&attachment),
+        );
+
+        // A login whose panel is not up yet: the callback lands, and the item is kept rather than
+        // shut down — "no watcher yet" is not "no tray ever".
+        assert!(
+            tray.watcher_offline(ksni::OfflineReason::No),
+            "the item must survive its watcher"
+        );
+        assert!(!attachment.attached());
+
+        // The panel appears, and the item goes with it.
+        tray.watcher_online();
+        assert!(attachment.attached());
+
+        // A shell that restarts: off and on again, without the item being rebuilt or the window
+        // ever losing the presenter.
+        tray.watcher_offline(ksni::OfflineReason::No);
+        assert!(!attachment.attached());
+        tray.watcher_online();
+        assert!(attachment.attached());
     }
 }
