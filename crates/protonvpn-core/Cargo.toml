@@ -15,7 +15,7 @@ serde_json = "1"
 # the one thing here that must not be hand-rolled to save four crates: the failure mode of getting
 # it subtly wrong is silent, and it is the check the whole update path rests on. RustCrypto's
 # implementation, no features beyond the default.
-sha2 = "0.10"
+sha2 = "0.11"
 # Project Fluent — the message catalogue. Chosen above the alternatives for one property that
 # matters more than the rest: a **developer comment lives beside the message**, in the same file,
 # and it is what tells a translator (human, or `scripts/translate`) where the string appears and

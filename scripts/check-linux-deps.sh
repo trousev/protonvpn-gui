@@ -23,7 +23,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# The Linux closure: 212 crates as of the localization. Project Fluent added 10 — `fluent-bundle`
+# The Linux closure: 213 as of sha2 0.11, a dependabot bump from 0.10.9. The major version moved the
+# crate onto `digest` 0.11, which retired `generic-array` — nowhere else in the graph — and brought
+# `hybrid-array` and `const-oid` in its place: two crates where there was one, which is the
+# whole of the growth. Nothing of ours moved with it; `sha256_file` reads the same against the new
+# `Digest`. The bump is taken rather than deferred because this is the crate that decides whether a
+# downloaded AppImage is the file we meant to download, and 0.11 is a stable release whose MSRV of
+# 1.85 sits below our 1.88.
+# Before that: 212 as of the localization. Project Fluent added 10 — `fluent-bundle`
 # with `fluent-syntax`, `fluent-langneg`, `intl-memoizer`, `intl_pluralrules`, `unic-langid` and its
 # `-impl`, `type-map`, `self_cell` and `smallvec`; `rustc-hash` and `memchr` were already here.
 # The catalogue is not something to hand-roll: a language needs plural rules (`ru` has three forms
@@ -38,7 +45,7 @@ cd "$REPO_ROOT"
 # `flate2`/`miniz_oxide`, `palette`, `rayon` and the `drm` family — and added 6 (`harfrust`,
 # `core_maths`, `iced_debug`, `iced_program`, `lilt`, `linebender_resource_handle`). Raise this only
 # with the reason in the commit message.
-MAX_CRATES=212
+MAX_CRATES=213
 
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 if [[ -z "$HOST_TRIPLE" ]]; then
