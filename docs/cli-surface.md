@@ -381,6 +381,13 @@ What *is* reliable, and what the probe is actually for:
 
 Country and city from the probe are still worth *displaying* — they are simply not evidence.
 
+> What the application does with all of this is in [`architecture.md`](architecture.md) §8, and it
+> is **less** than the list above suggests: the probe keeps one reading and the comparison in item 1
+> is not computed. It answered "no change" about a working tunnel whenever the application started
+> while the VPN was already up, and it was the reason the SOCKS5 gate stayed shut. The finding here
+> — that the comparison is the only meaningful use of an IP echo — stands; what changed is that the
+> application leaves the judging to the person reading the card.
+
 ### 4.7 NetShield vs port forwarding — correcting an earlier claim
 
 These two behave completely differently after the CLI exits, and an earlier draft wrongly

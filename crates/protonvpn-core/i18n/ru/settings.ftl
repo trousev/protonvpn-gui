@@ -154,9 +154,10 @@ settings-polling-consequence = Следствие, которое мы не ск
 # остаётся как есть.
 settings-probe-label = Проверять внешний адрес через curl
 
-# Описание этого переключателя. Оно называет проверку исключением №1: единственный внешний вызов
-# помимо protonvpn. `protonvpn` — имя программы, оно остаётся как есть.
-settings-probe-hint = Исключение №1: единственный внешний вызов помимо protonvpn. Отвечает на вопрос, которого CLI не может — идёт ли трафик через туннель.
+# The description of that switch. It names the probe as sanctioned exception #1: the only external
+# call besides protonvpn. `protonvpn` is a program name and stays as it is. It promises one fact —
+# the address the outside sees — and no verdict about it.
+settings-probe-hint = Исключение №1: единственный внешний вызов помимо protonvpn. Показывает адрес, который видит внешний мир, — а CLI в этом может ошибаться.
 
 ## Карточка аккаунта, на вкладке «Аккаунт».
 
@@ -207,9 +208,10 @@ settings-send = Отправить
 # Заголовок карточки прокси. `SOCKS5` — имя протокола, оно не переводится.
 settings-socks5-eyebrow = Приложение · SOCKS5
 
-# Объяснение самой карточки. Это решение об устройстве, а не реклама: прокси отказывает всему,
-# пока туннель не подтверждён, и по умолчанию он выключен. Сохраните оба факта.
-settings-socks5-intro = Локальный SOCKS5-прокси для программ, которые должны ходить в сеть только через VPN: приложение настраивается на этот адрес, а прокси отказывает всему, пока не подтверждено, что трафик идёт через туннель. Выключено по умолчанию.
+# The card's own explanation. It is a design decision and not a sales line: the proxy refuses
+# everything until the CLI reports a connection, holds the route the kernel gave it for as long as
+# it relays, and is off by default. Keep all three facts.
+settings-socks5-intro = Локальный SOCKS5-прокси для программ, которые должны ходить в сеть только через VPN: приложение настраивается на этот адрес, а прокси отказывает всему, пока CLI не сообщит о подключении, — и, пока он передаёт трафик, держит маршрут, который дало ядро, закрываясь в тот момент, когда маршрут уезжает. Выключено по умолчанию.
 
 # Флажок, включающий прокси.
 settings-socks5-enable = Включить локальный SOCKS5-прокси
@@ -224,34 +226,29 @@ settings-socks5-port-label = Порт
 # «Применить», поэтому держите её короткой. `0` в поле выключает внешнюю проверку.
 settings-socks5-verify-label = Проверка туннеля, с
 
-# Строка состояния, когда шлюз открыт. $source — локальный IPv4-адрес, которым ядро отвечает на
-# вопрос о маршруте; это данные, они не переводятся.
-settings-socks5-open = открыт · маршрут подтверждён: { $source }
+# The state line when the gate is open. $source is the local IPv4 address the kernel answers the
+# route question with — data, never translated. "pinned" is the honest word: it is held, not
+# proven, and every dial re-reads it.
+settings-socks5-open = открыт · маршрут закреплён: { $source }
 
-# Строка состояния, когда шлюз закрыт. $reason — готовое предложение из каталога (`proxy-gate-*`:
-# «VPN не подключён», «маршрут 10.0.0.2 не подтверждён…»), уже на языке читателя: не переводите его
-# второй раз и сохраните разделитель.
+# The state line when the gate is closed. $reason is a finished sentence from the catalogue
+# (`proxy-gate-*`: "VPN is not connected", "route 10.0.0.2 disappeared…") and is already in the
+# reader's language — do not translate it again, and keep the separator.
 settings-socks5-closed = закрыт · { $reason }
 
 # Совет под строкой состояния, когда прокси включён, но CLI не сообщает о подключении: ничего не
 # сломано, шлюз откроется сам. Одно предложение.
 settings-socks5-advice-not-connected = Прокси откроется сам, как только CLI сообщит о подключении.
 
-# Совет, когда маршрут ядра не наблюдался до подключения и сравнивать его не с чем. Два имени кнопок
-# в нём — «Отключить», затем «Подключиться» — это слова страницы «Обзор»; переведите их так же.
-settings-socks5-advice-unverified = Приложение не видело, каким маршрут был до подключения, и не может утверждать, что нынешний — туннель. Переподключитесь (Отключить, затем Подключиться): тогда маршрут подтвердится.
+# Advice when the pinned route changed or disappeared. Direct, not alarmist: this is the proxy
+# doing its job, and it deliberately will not pin another route on the same "connected" report —
+# see docs/architecture.md §13. The two button names — Disconnect, then Connect — are the words of
+# the Overview page; translate them the same way here.
+settings-socks5-advice-route = Маршрут, который держал прокси, уехал или исчез. Переподключитесь (Отключить, затем Подключиться), чтобы он закрепил новый: до этого прокси не выпустит ни байта.
 
-# Совет, когда подтверждённый маршрут изменился или исчез. Прямо, без паники: это прокси делает свою
-# работу и не пропустит ни байта, пока туннель не подтвердится заново.
-settings-socks5-advice-route = Переподключитесь, чтобы подтвердить туннель заново: пока это не сделано, прокси не выпустит ни байта.
-
-# Совет, когда проверка внешнего адреса снова видит адрес до подключения: туннель не несёт трафик,
-# что бы ни говорил CLI.
-settings-socks5-advice-egress = Проверка внешнего адреса увидела тот же адрес, что и до подключения. Переподключитесь.
-
-# Совет, когда фоновая проверка туннеля перестала отвечать. Он говорит ровно то, что осталось —
-# локальная проверка маршрута, — и чего эта проверка не видит.
-settings-socks5-advice-probe-silent = Внешняя проверка туннеля не отвечает: без неё остаётся только локальная проверка маршрута, а она видит не всё. Проверьте связь и переподключитесь, чтобы туннель подтвердился заново.
+# Advice when the background egress check stopped answering. Two silences in a row are the one
+# verdict that check reaches on its own, and it is a verdict about the path, not about the tunnel.
+settings-socks5-advice-probe-silent = Внешняя проверка дважды подряд не ответила, и прокси закрылся, вместо того чтобы передавать трафик в путь, который ничего не отвечает. Проверьте связь и переподключитесь.
 
 # Совет, когда слушателя нет: адрес не петлевой или порт занят. `localhost` — имя хоста, оно
 # остаётся как есть.

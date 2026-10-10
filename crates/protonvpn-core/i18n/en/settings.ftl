@@ -154,8 +154,9 @@ settings-polling-consequence = The consequence, which we do not hide: the state 
 settings-probe-label = Check the egress address with curl
 
 # The description of that switch. It names the probe as sanctioned exception #1: the only external
-# call besides protonvpn. `protonvpn` is a program name and stays as it is.
-settings-probe-hint = Exception #1: the only external call besides protonvpn. It answers a question the CLI cannot — whether traffic is going through the tunnel.
+# call besides protonvpn. `protonvpn` is a program name and stays as it is. It promises one fact —
+# the address the outside sees — and no verdict about it.
+settings-probe-hint = Exception #1: the only external call besides protonvpn. It shows the address the outside sees, which the CLI can be wrong about.
 
 ## The account card, on the Account tab.
 
@@ -207,8 +208,9 @@ settings-send = Send
 settings-socks5-eyebrow = Application · SOCKS5
 
 # The card's own explanation. It is a design decision and not a sales line: the proxy refuses
-# everything until the tunnel is proven, and it is off by default. Keep both facts.
-settings-socks5-intro = A local SOCKS5 proxy for programs that must reach the network only through the VPN: point the application at this address, and the proxy refuses everything until it is proven that traffic goes through the tunnel. Off by default.
+# everything until the CLI reports a connection, holds the route the kernel gave it for as long as
+# it relays, and is off by default. Keep all three facts.
+settings-socks5-intro = A local SOCKS5 proxy for programs that must reach the network only through the VPN: point the application at this address, and the proxy refuses everything until the CLI reports a connection — and, while it relays, holds the route the kernel gave it and shuts the moment that route moves. Off by default.
 
 # The checkbox that turns the proxy on.
 settings-socks5-enable = Enable the local SOCKS5 proxy
@@ -226,11 +228,12 @@ settings-socks5-port-label = Port
 settings-socks5-verify-label = Tunnel check, s
 
 # The state line when the gate is open. $source is the local IPv4 address the kernel answers the
-# route question with — data, never translated.
-settings-socks5-open = open · route confirmed: { $source }
+# route question with — data, never translated. "pinned" is the honest word: it is held, not
+# proven, and every dial re-reads it.
+settings-socks5-open = open · route pinned: { $source }
 
 # The state line when the gate is closed. $reason is a finished sentence from the catalogue
-# (`proxy-gate-*`: "VPN is not connected", "route 10.0.0.2 is unproven…") and is already in the
+# (`proxy-gate-*`: "VPN is not connected", "route 10.0.0.2 disappeared…") and is already in the
 # reader's language — do not translate it again, and keep the separator.
 settings-socks5-closed = closed · { $reason }
 
@@ -238,22 +241,15 @@ settings-socks5-closed = closed · { $reason }
 # wrong and the gate opens by itself. One sentence.
 settings-socks5-advice-not-connected = The proxy will open on its own as soon as the CLI reports a connection.
 
-# Advice when the kernel's route was never observed before connecting, so there is nothing to
-# compare it against. The two button names in it — Disconnect, then Connect — are the words of the
-# Overview page; translate them the same way here.
-settings-socks5-advice-unverified = The application never saw what the route was before connecting, and cannot claim the current one is the tunnel. Reconnect (Disconnect, then Connect): then the route will be confirmed.
+# Advice when the pinned route changed or disappeared. Direct, not alarmist: this is the proxy
+# doing its job, and it deliberately will not pin another route on the same "connected" report —
+# see docs/architecture.md §13. The two button names — Disconnect, then Connect — are the words of
+# the Overview page; translate them the same way here.
+settings-socks5-advice-route = The route the proxy was holding moved or disappeared. Reconnect (Disconnect, then Connect) so it can pin the new one: until then not a single byte goes out.
 
-# Advice when the proven route changed or disappeared. Direct, not alarmist: this is the proxy doing
-# its job, and it will not relay until the tunnel is proven again.
-settings-socks5-advice-route = Reconnect to confirm the tunnel again: until that is done the proxy will not let a single byte out.
-
-# Advice when the egress check reports the pre-connection address again: the tunnel is not carrying
-# traffic, whatever the CLI says.
-settings-socks5-advice-egress = The egress check saw the same address as before connecting. Reconnect.
-
-# Advice when the background tunnel check stopped answering. It says exactly what is left — the
-# local route check — and what that check cannot see.
-settings-socks5-advice-probe-silent = The external tunnel check is not answering: without it only the local route check is left, and it does not see everything. Check the connection and reconnect, so that the tunnel is confirmed again.
+# Advice when the background egress check stopped answering. Two silences in a row are the one
+# verdict that check reaches on its own, and it is a verdict about the path, not about the tunnel.
+settings-socks5-advice-probe-silent = The external check went silent twice in a row, so the proxy shut rather than relay into a path that answers nothing. Check the connection and reconnect.
 
 # Advice when there is no listener: the address is not loopback, or the port is taken. `localhost`
 # is a host name and stays as it is.

@@ -10,9 +10,14 @@
 //! * **country and city are display-only.** Measured: the single address `205.147.16.120` was
 //!   reported as NL by `ipinfo.io` and US by `ifconfig.co`. A "geo consistency check" would be a
 //!   false-alarm generator, so there isn't one.
-//! * the baseline and the later reading must come from the **same** endpoint, so a database
-//!   disagreement can never masquerade as a state change. Picking the endpoint once, here, is
-//!   what enforces that.
+//! * **the reading is a fact, not a verdict.** The application keeps one reading — where traffic
+//!   leaves by, and from which service — and draws no conclusion from it. Comparing it with an
+//!   earlier address was measured to be useless in the case that matters: an application started
+//!   while the tunnel is already up reads the tunnel's own address as its first, so "did it
+//!   change?" answers "no" about a tunnel that is working perfectly. Whether the address moved is
+//!   for the reader to see (`docs/architecture.md` §8).
+//! * the endpoint is picked **once** for the session, so two readings come from the same service
+//!   and a database disagreement cannot look like a state change to the person comparing them.
 
 use std::net::IpAddr;
 use std::process::Command;

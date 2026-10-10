@@ -508,11 +508,9 @@ fn socks5_card(app: &App) -> Element<'_, Message> {
             let advice = match &reason {
                 Closed::Disabled => None,
                 Closed::NotConnected => Some(app.i18n.settings_socks5_advice_not_connected()),
-                Closed::Unverified { .. } => Some(app.i18n.settings_socks5_advice_unverified()),
                 Closed::RouteChanged { .. } | Closed::RouteLost { .. } => {
                     Some(app.i18n.settings_socks5_advice_route())
                 }
-                Closed::EgressIsBaseline { .. } => Some(app.i18n.settings_socks5_advice_egress()),
                 Closed::ProbeUnanswered { .. } => {
                     Some(app.i18n.settings_socks5_advice_probe_silent())
                 }

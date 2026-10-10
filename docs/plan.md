@@ -210,21 +210,24 @@ readable and copyable.
 ### Phase 2.75 — The paranoid option: a local SOCKS5 proxy — **done**
 
 > [`architecture.md`](architecture.md) §13. An application that must never reach the network
-> without the VPN is pointed at `127.0.0.1:1080`; the proxy relays only while the tunnel can be
-> *shown* to carry traffic, and refuses with SOCKS5 `0x02` (a shut gate; anything else it cannot
-> serve gets the reply code that fits — `0x07`, `0x08`, `0x03`, `0x04`). Off by default, loopback
-> only, IPv4 + `CONNECT` only, no authentication.
+> without the VPN is pointed at `127.0.0.1:1080`; the proxy relays only while the kernel's route
+> answer holds, and refuses with SOCKS5 `0x02` (a shut gate; anything else it cannot serve gets the
+> reply code that fits — `0x07`, `0x08`, `0x03`, `0x04`). Off by default, loopback only, IPv4 +
+> `CONNECT` only, no authentication.
 >
 > The gate is not a `status` poll: it is the kernel's source-address answer for off-link traffic
-> (`net/route.rs`, one connected UDP socket that is never written to), opened only when that answer
-> differs from one observed while the CLI said the tunnel was down, re-read every 200 ms while the
-> door is open, and checked again around every dial. The egress probe (exception #1) confirms it
-> every `verify_seconds` — when that probe is enabled at all — and closes the door if the
-> pre-connection address comes back. Everything
+> (`net/route.rs`, one connected UDP socket that is never written to), pinned when the CLI reports a
+> connection, re-read every 200 ms while the door is open, and checked again around every dial. The
+> egress probe (exception #1) keeps the Overview's reading current every `verify_seconds` — when
+> that probe is enabled at all — and closes the door when the path stops answering. It first
+> demanded that the route *differ* from one observed while the CLI said the tunnel was down, and
+> that comparison was removed: an application started while the VPN is already up has only ever
+> seen the tunnel's own route, so the requirement kept the proxy shut about a perfectly good tunnel
+> (§8, §13.1). Everything
 > the design cannot promise — a route change that keeps the same source address, the window
 > between the route check and the connect (the name lookup plus up to ten seconds of dial), DNS
-> through the system resolver, IPv6 refused rather than guessed — is written down in §13.2 rather
-> than left to be discovered.
+> through the system resolver, IPv6 refused rather than guessed, a tunnel that is routed but
+> carries nothing — is written down in §13.2 rather than left to be discovered.
 
 ### Phase 3 — Packaging — **done**
 
@@ -319,7 +322,7 @@ connection works. Staleness is handled by the timestamp-and-attention-poll desig
 | A connect we did not initiate (user's own terminal) | UI disagrees with reality until the next poll | attention-driven poll on window open / tray click |
 | Port shown on a server that doesn't support forwarding | user pastes a port that never worked | only request a lease where the connect output says forwarding is active; otherwise explain |
 | Forwarded port changes after a reconnect | user's P2P app points at a dead port | make the current port prominent and easy to re-copy |
-| The SOCKS5 proxy claims protection it cannot prove | a paranoid user trusts a door that was never armed | it arms only on a route the kernel was seen to change, stays shut otherwise, and says on the settings page why; the residual risks are §13.2, not a footnote |
+| The SOCKS5 proxy claims protection it cannot prove | a paranoid user trusts a door that was never armed | it holds the route the kernel answers with while the CLI reports a connection, re-reads it around every dial and every 200 ms, closes and drops what was relaying when it moves or vanishes, and will not pin a new one on the CLI's word alone; the residual risks are §13.2, not a footnote |
 
 ---
 

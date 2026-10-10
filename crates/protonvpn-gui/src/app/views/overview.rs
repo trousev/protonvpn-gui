@@ -151,32 +151,20 @@ fn location_city(location: &str) -> String {
 
 // --- egress probe ---------------------------------------------------------------------------
 
+/// Where traffic leaves by, as an outside service sees it: one reading, carried with its age, and
+/// compared with nothing at all (`docs/architecture.md` §8).
 fn egress_card(app: &App) -> Element<'_, Message> {
-    type Reading = Observation<EgressReading>;
-    let egress = &app.shared.state.egress;
-    let current: Option<&Reading> = egress.current.as_ref();
-    let baseline: Option<&Reading> = egress.baseline.as_ref();
+    let current: Option<&Observation<EgressReading>> = app.shared.state.egress.as_ref();
 
-    let verdict: Element<'_, Message> = match egress.egress_changed() {
-        Some(true) => text(app.i18n.overview_egress_changed())
-            .size(12)
-            .style(|_: &Theme| iced::widget::text::Style {
-                color: Some(theme::SUCCESS),
-            })
-            .into(),
-        Some(false) => text(app.i18n.overview_egress_unchanged())
-            .size(12)
-            .style(|_: &Theme| iced::widget::text::Style {
-                color: Some(theme::WARNING),
-            })
-            .into(),
+    let age = match current {
+        Some(observation) => widgets::faint(observation.age_text(&app.i18n)),
         None => widgets::faint("—"),
     };
 
     let head = row![
         widgets::eyebrow(app.i18n.overview_egress_eyebrow()),
         Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
-        verdict,
+        age,
         button(text(app.i18n.overview_egress_measure()).size(12))
             .padding(Padding::from([4, 10]))
             .style(theme::outlined(theme::BORDER, theme::TEXT))
@@ -185,38 +173,26 @@ fn egress_card(app: &App) -> Element<'_, Message> {
     .spacing(8)
     .align_y(Alignment::Center);
 
-    let address = |reading: Option<&Reading>| match reading {
-        Some(observation) => observation.value.ip.to_string(),
-        None => "—".to_string(),
-    };
-    let country = current
-        .and_then(|observation| observation.value.country.clone())
-        .unwrap_or_else(|| "—".into());
-    let asn = current
-        .and_then(|observation| observation.value.asn_org.clone())
-        .unwrap_or_else(|| "—".into());
-    let endpoint = current
-        .map(|observation| observation.value.endpoint.name().to_string())
-        .unwrap_or_else(|| "—".into());
+    let fact = |value: Option<String>| value.unwrap_or_else(|| "—".into());
+    let ip = fact(current.map(|observation| observation.value.ip.to_string()));
+    let country = fact(current.and_then(|observation| observation.value.country.clone()));
+    let provider = fact(current.and_then(|observation| observation.value.asn_org.clone()));
+    let endpoint = fact(current.map(|observation| observation.value.endpoint.name().to_string()));
 
     let rows = column![
-        widgets::fact_row(app.i18n.overview_egress_ipv4(), address(current)),
-        widgets::separator(),
-        widgets::fact_row(app.i18n.overview_egress_baseline(), address(baseline)),
+        widgets::fact_row(app.i18n.overview_egress_ip(), ip),
         widgets::separator(),
         widgets::fact_row(app.i18n.overview_egress_country(), country),
         widgets::separator(),
-        widgets::fact_row(app.i18n.overview_egress_asn(), asn),
+        widgets::fact_row(app.i18n.overview_egress_asn(), provider),
         widgets::separator(),
         widgets::fact_row(app.i18n.overview_egress_source(), endpoint),
     ]
     .spacing(8);
 
-    let explanation = match egress.egress_changed() {
-        Some(true) => app.i18n.overview_egress_changed_note(),
-        Some(false) => app.i18n.overview_egress_unchanged_note(),
-        None if current.is_some() => app.i18n.overview_egress_no_baseline(),
-        None => app.i18n.overview_egress_no_tunnel(),
+    let explanation = match current {
+        Some(_) => app.i18n.overview_egress_current_note(),
+        None => app.i18n.overview_egress_none(),
     };
 
     widgets::card(
@@ -542,41 +518,31 @@ mod tests {
         assert_eq!(i18n.overview_tile_protocol(), "Protocol");
     }
 
-    /// The probe card is the one place the application contradicts the CLI out loud. Every one of
-    /// these lines is a design decision (`docs/architecture.md` §13, `docs/cli-surface.md` §4.9),
-    /// and softening one of them is a change of meaning — so they are pinned too.
+    /// The probe card is the one card whose reading comes from outside the CLI. Every one of these
+    /// lines is a design decision (`docs/architecture.md` §8, `docs/cli-surface.md` §4.9), and
+    /// softening one of them is a change of meaning — so they are pinned too. There is deliberately
+    /// no verdict among them: the card shows a measurement and its age, and compares nothing.
     #[test]
     fn the_egress_card_wording_is_the_catalogue() {
         let i18n = english();
-        assert_eq!(i18n.overview_egress_changed(), "address changed");
-        assert_eq!(i18n.overview_egress_unchanged(), "address did not change");
         assert_eq!(
             i18n.overview_egress_eyebrow(),
             "Egress probe · ground truth"
         );
         assert_eq!(i18n.overview_egress_measure(), "Measure");
-        assert_eq!(i18n.overview_egress_ipv4(), "IPv4 (probe)");
-        assert_eq!(i18n.overview_egress_baseline(), "Before connecting");
-        assert_eq!(i18n.overview_egress_country(), "Country (advisory)");
-        assert_eq!(i18n.overview_egress_asn(), "ASN / organization");
+        assert_eq!(i18n.overview_egress_ip(), "Current IP");
+        assert_eq!(i18n.overview_egress_country(), "Current country (advisory)");
+        assert_eq!(i18n.overview_egress_asn(), "Provider (ASN / organization)");
         assert_eq!(i18n.overview_egress_source(), "Source");
         assert_eq!(
-            i18n.overview_egress_changed_note(),
-            "The address changed — traffic is going through the tunnel."
+            i18n.overview_egress_current_note(),
+            "Taken at startup and on every connect and disconnect; Measure takes it again. Nothing \
+             here is compared: whether the address changed is for you to see, not for us to judge."
         );
         assert_eq!(
-            i18n.overview_egress_unchanged_note(),
-            "The address did not change. If the CLI says \"connected\", the tunnel is not \
-             carrying traffic."
-        );
-        assert_eq!(
-            i18n.overview_egress_no_baseline(),
-            "There is nothing to compare against: this address was read before we started \
-             measuring."
-        );
-        assert_eq!(
-            i18n.overview_egress_no_tunnel(),
-            "The probe runs after connecting — the tunnel is not active."
+            i18n.overview_egress_none(),
+            "Nothing measured yet. Press Measure — and if the check is off in the settings, turn it \
+             on first."
         );
         assert_eq!(
             i18n.overview_egress_provenance(),

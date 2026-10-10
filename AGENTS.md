@@ -27,7 +27,7 @@ most likely way to destroy this design. Do not.
 Exactly four exceptions are sanctioned and bounded —
 [`docs/architecture.md`](docs/architecture.md) §0 has the table: a `curl` ground-truth probe,
 NAT-PMP for the port-forwarding lease, a loopback-only SOCKS5 proxy that refuses to relay unless
-the tunnel can be shown to carry traffic (§13), and a `curl` to **this project's own release page**
+the route it pinned still holds (§13), and a `curl` to **this project's own release page**
 for the AppImage updater, which verifies what it downloads and never executes it (§14). Do not add
 a fifth without a human decision.
 
@@ -185,8 +185,9 @@ Two rules that are easy to get wrong and expensive later:
   poll on a short fixed timer. Idle cadence is ≥5 minutes, with extra fresh reads when the user
   looks (window open, tray click).
 - **Geolocation from the probe is not evidence.** `ifconfig.co` and `ipinfo.io` report *different
-  countries for the same IP* — see `docs/cli-surface.md` §4.9. Only "did the egress IP change
-  from the pre-connection baseline" means anything.
+  countries for the same IP* — see `docs/cli-surface.md` §4.9. Country and provider are shown
+  because they are worth reading; nothing in the application is decided by them, and nothing is
+  decided by comparing two readings either (`docs/architecture.md` §8).
 - **The CLI refuses to run while the official GTK app is running**, because it checks for the
   session-bus name `proton.vpn.app.gtk`. Our app must never own that name.
 - **`protonvpn signin` prompts on a TTY**, which is why every invocation goes through a PTY
@@ -195,10 +196,12 @@ Two rules that are easy to get wrong and expensive later:
 - **`docs/research.md` records two retracted conclusions** — NetShield breaking on client exit,
   and GeoIP consistency checking — kept deliberately, with the evidence that overturned them. Do
   not re-derive the old conclusions from the surrounding text.
-- **The SOCKS5 proxy arms on evidence, never on hope.** It opens only when the kernel's route
-  differs from a route observed while the CLI said the tunnel was down, so an application started
-  while the VPN is already up finds the proxy **shut** until one reconnect. That is deliberate
-  (`docs/architecture.md` §13): a proxy that cannot show it is protecting you must not claim it is.
+- **The SOCKS5 proxy pins the route and holds it; it does not demand that the route changed.** It
+  opens when the CLI reports a connection, pinning the source address the kernel answers with, and
+  closes — dropping what was relaying — the moment that address moves, vanishes or stops carrying
+  anything. Do not re-introduce a comparison against a "before connecting" route: an application
+  started while the VPN is already up has only ever seen the tunnel's own, and the comparison is
+  what used to keep the proxy **shut** about a perfectly good tunnel (`docs/architecture.md` §13).
 - **State must be shown with its age** (`updated 3 mins ago`), never as a bare verdict and never
   with the word "stale". See `docs/architecture.md` §7.
 - **The AppImage's file name is a contract.** `ProtonVPN-GUI-<version>-<arch>.AppImage` is how the
@@ -261,10 +264,10 @@ queued, by the log bus when the record opened — so anything recorded in betwee
 a NAT-PMP renewal) could swap ids with a waiting command and file that command's output under the
 note, where the interpreter would read it as the note's; the bus now takes the id the engine
 reserved (§3). Then the paranoid option ([`docs/architecture.md`](docs/architecture.md) §13):
-`socks5.rs` is a loopback-only SOCKS5 proxy, off by default, whose gate opens only on a route the
-kernel was seen to change, whose watchdog re-reads that route every 200 ms without a packet, and
-whose `net/route.rs` needs no NetworkManager, no D-Bus and no Proton file to answer the only
-question it asks.
+`socks5.rs` is a loopback-only SOCKS5 proxy, off by default, whose gate holds the route the kernel
+answers with, whose watchdog re-reads that route every 200 ms without a packet, and whose
+`net/route.rs` needs no NetworkManager, no D-Bus and no Proton file to answer the only question it
+asks.
 
 Then the AppImage updater (exception #4, [`docs/architecture.md`](docs/architecture.md) §14):
 `scripts/version.sh` is the one definition of `X.Y.N`, baked into the binary by
@@ -303,6 +306,21 @@ with no tray the close button refuses on purpose, and the notice it showed point
 that was not there — so the window now carries its own **Quit**, in the sidebar and on the login
 page, from the same catalogue entry the tray menu uses.
 
+Then a bug from the same kind of live use: the GUI was restarted while the VPN stayed up, and the
+SOCKS5 proxy never opened. It armed only on a route the kernel had been *seen to change* while the
+CLI said the tunnel was down — and a process that starts with the tunnel already up has only ever
+seen the tunnel's own route, so it landed in `route … is unproven` and stayed there until a
+reconnect. The egress reading had the same shape: the first address it ever read became the
+"baseline", so the next reading matched it and the watch closed the gate as "the tunnel is not
+carrying traffic" about a tunnel that was. Both comparisons are gone. The gate now pins whatever
+the kernel answers when the CLI reports a connection and holds it — every dial and a 200 ms
+watchdog re-read it — while a route that breaks is not re-pinned on the CLI's word alone: the
+tunnel has to be reported gone first, which is what a reconnect does. The probe keeps one reading
+instead of two, taken at startup, on every connect and disconnect, on demand and on the watch's
+own clock, and shows it as `Current IP` / `Current country` / `Provider` with its age; whether the
+address moved is the user's to notice. The cost is written down rather than hidden: a tunnel that
+is routed but carries nothing is no longer detected (`docs/architecture.md` §13.2).
+
 **Next:** a live `signin` run with real credentials (needs a human — the password prompt is
 captured, the 2FA prompt is not); a live port-forwarding check against a P2P server; a live
 SOCKS5 round trip with a real application on the other end of the listener; desktop
@@ -333,3 +351,15 @@ because rootless Xwayland never composites the children into it.
 country and the tray reports it, `protonvpn status` agrees, the egress address changes and comes
 back, disconnecting from the tray menu takes effect within seconds, quitting from the tray leaves
 no window and no bus name, and no NetworkManager profile or egress change is left behind.
+
+**Verified live** (2026-10-09, the proxy gate on a restart): the tunnel really was up — `ip route get
+1.1.1.1` answered `dev proton0 … src 10.2.0.2` — and the application was started headless (`sway`
+with `WLR_BACKENDS=headless`, a sandboxed `$HOME`, the proxy enabled on a spare port) as if the GUI
+had been restarted while the VPN stayed up. The CLI was a stand-in reporting `Status: Connected`,
+because the real one cannot write its log or its runtime lock under the read-only `/` of this
+sandbox; the kernel's route and the relay were the machine's own. The **old build** bound the
+listener and refused every dial with SOCKS5 `0x02` — `curl: (97) cannot complete SOCKS5 connection
+… (2)` — which is the reported bug reproduced exactly: the route it had sampled at startup was the
+tunnel's own, so nothing was ever "proven". The **new build**, in the same situation, pinned
+`10.2.0.2` and relayed: `curl --socks5-hostname 127.0.0.1:<port> https://ifconfig.co/json` came back
+with an egress address, and every dial it served was re-checked against the pin.

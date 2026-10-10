@@ -3,23 +3,23 @@
 //!
 //! The idea is a **paranoid option**, not a general-purpose proxy: an application that must never
 //! touch the network without the VPN gets pointed at `127.0.0.1:1080`, and the proxy refuses to
-//! relay anything it cannot prove is going through the tunnel. Off by default, loopback only,
-//! IPv4 only (an IPv6 hop we cannot pin is refused rather than guessed at), and it speaks exactly
-//! one SOCKS5 command — `CONNECT`.
+//! relay anything whose route it cannot hold on to. Off by default, loopback only, IPv4 only (an
+//! IPv6 hop we cannot pin is refused rather than guessed at), and it speaks exactly one SOCKS5
+//! command — `CONNECT`.
 //!
-//! How "prove" works, without knowing anything about how Proton connects:
+//! How that works, without knowing anything about how Proton connects:
 //!
-//! 1. **The gate.** The engine opens it only when the CLI reports `Connected` *and* the kernel's
-//!    source address for off-link traffic differs from an address observed while it was not
-//!    connected ([`crate::net::route`]). "The route is different from the one we had before the
-//!    VPN" is the same evidence the ground-truth probe uses for the egress address
-//!    (`docs/architecture.md` §8), applied to the local route.
-//! 2. **The pin.** The gate is pinned to the source address the kernel chose while the tunnel was
-//!    up, and every dial must come from it. The standard library cannot bind a source address
-//!    before connecting, so the pin is enforced twice: the route is re-read immediately before the
-//!    dial, and the socket's own `local_addr` is checked immediately after it — before a single
-//!    byte of the application's is relayed. What that leaves is a TCP handshake in the
-//!    microseconds between the two checks: no payload, and it is detected and reported.
+//! 1. **The gate.** The engine opens it when the CLI reports `Connected`, pinning the source
+//!    address the kernel would use for off-link traffic ([`crate::net::route`]). It deliberately
+//!    does not ask whether that address *changed*: an application started while the tunnel is
+//!    already up has only ever seen the tunnel's own route, and would otherwise stay shut until a
+//!    reconnect (`docs/architecture.md` §13).
+//! 2. **The pin.** Every dial must come from the pinned address. The standard library cannot bind a
+//!    source address before connecting, so the pin is enforced twice: the route is re-read
+//!    immediately before the dial, and the socket's own `local_addr` is checked immediately after
+//!    it — before a single byte of the application's is relayed. What that leaves is a TCP
+//!    handshake in the microseconds between the two checks: no payload, and it is detected and
+//!    reported.
 //! 3. **The watchdog.** While the gate is open, the route is re-read every 200 ms — no packets, no
 //!    third party, one syscall. Divergence is reported to the engine, which closes the gate and
 //!    drops every relayed connection.
@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{
-    IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream, ToSocketAddrs,
+    Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream, ToSocketAddrs,
 };
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -92,9 +92,6 @@ pub enum Closed {
     Disabled,
     /// The CLI does not report a connection, so there is nothing to pin.
     NotConnected,
-    /// The CLI says connected, but this route has never been seen to differ from a route observed
-    /// while it was not: we cannot claim it is the tunnel, so we claim nothing.
-    Unverified { candidate: Ipv4Addr },
     /// The gate was open and the kernel now chooses something else.
     RouteChanged {
         expected: Ipv4Addr,
@@ -102,9 +99,6 @@ pub enum Closed {
     },
     /// The route or the pinned address is gone.
     RouteLost { detail: RouteLoss },
-    /// The ground-truth probe reports the pre-connection egress address again: the tunnel is not
-    /// carrying traffic, whatever the CLI says.
-    EgressIsBaseline { ip: IpAddr },
     /// Enabled, but there is no listener: the address is not loopback, or the port is taken.
     NotListening { detail: String },
     /// The background tunnel check stopped answering. Not a statement about the route — a failed
@@ -123,7 +117,6 @@ impl Closed {
         match self {
             Self::Disabled => i18n.proxy_gate_disabled(),
             Self::NotConnected => i18n.proxy_gate_not_connected(),
-            Self::Unverified { candidate } => i18n.proxy_gate_unverified(candidate.to_string()),
             Self::RouteChanged { expected, observed } => match observed {
                 Some(observed) => {
                     i18n.proxy_gate_route_changed(expected.to_string(), observed.to_string())
@@ -134,7 +127,6 @@ impl Closed {
                 RouteLoss::Unreadable(error) => error.describe(i18n),
                 RouteLoss::Dial { target, detail } => format!("{target}: {detail}"),
             }),
-            Self::EgressIsBaseline { ip } => i18n.proxy_gate_egress_baseline(ip.to_string()),
             Self::NotListening { detail } => i18n.proxy_gate_not_listening(detail),
             Self::ProbeUnanswered { detail } => i18n.proxy_gate_probe_unanswered(detail),
         }
@@ -1149,8 +1141,8 @@ mod tests {
     #[test]
     fn a_closed_gate_refuses_without_touching_the_network() {
         let route = ScriptedRoute::new(LAN);
-        // A fresh gate is closed, and that is the only state it can be in until the engine has
-        // evidence: here nothing has enabled the proxy at all.
+        // A fresh gate is closed, and that is the only state it can be in until the engine opens
+        // it: nothing has enabled the proxy, let alone reported a connection.
         let Fixture { server, stats, .. } = proxy(&route);
         let mut client = TcpStream::connect(server.addr()).unwrap();
         client
