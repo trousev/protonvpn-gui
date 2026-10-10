@@ -61,14 +61,6 @@ overview-tile-protocol = Protocol
 # connection's name — one of the CLI's presets or a profile the user named — and is data.
 overview-age-and-target = { $age } · connection: { $target }
 
-# The verdict beside the egress card's eyebrow when the measured address differs from the one
-# measured before connecting. Short and lowercase: it shares its row with the eyebrow and a button.
-overview-egress-changed = address changed
-
-# The verdict beside that eyebrow when the address did not change. It is not a success — the note
-# below it explains what it means.
-overview-egress-unchanged = address did not change
-
 # The eyebrow of the egress probe card. An eyebrow: drawn in capitals by the widget.
 # "egress" is the address traffic leaves by; "ground truth" is deliberate — a measurement is the
 # evidence, and the CLI's own report is not (docs/cli-surface.md §4.9).
@@ -77,39 +69,31 @@ overview-egress-eyebrow = Egress probe · ground truth
 # The egress card's button: run the probe now.
 overview-egress-measure = Measure
 
-# A fact row in the egress card: the address the probe measured. The value beside the label is an
-# IP address — data, never translated. "probe" distinguishes it from any address the CLI reports.
-overview-egress-ipv4 = IPv4 (probe)
+# A fact row in the egress card: the address the service sees right now. The value beside the
+# label is an IP address — data, never translated. There is deliberately no "before" row beside
+# it: the application keeps one reading and compares nothing.
+overview-egress-ip = Current IP
 
-# A fact row in the egress card: the address measured before connecting, which the probe is
-# compared against.
-overview-egress-baseline = Before connecting
+# A fact row in the egress card: the country the GeoIP service reported for that address.
+# "(advisory)" is the honesty — the geo databases disagree with each other, so this is not
+# evidence of anything.
+overview-egress-country = Current country (advisory)
 
-# A fact row in the egress card: the country the GeoIP service reported. "(advisory)" is the
-# honesty — the geo databases disagree with each other, so this is not evidence of anything.
-overview-egress-country = Country (advisory)
-
-# A fact row in the egress card: the autonomous system and organisation the service reported. The
-# value is data; "ASN" is the standard abbreviation and stays as it is.
-overview-egress-asn = ASN / organization
+# A fact row in the egress card: the autonomous system and organisation the service reported —
+# the network traffic leaves by. The value is data; "ASN" is the standard abbreviation and stays
+# as it is.
+overview-egress-asn = Provider (ASN / organization)
 
 # A fact row in the egress card: which service answered the probe. The value is data (a host name).
 overview-egress-source = Source
 
-# The note under the egress card's rows when the address changed: the tunnel is carrying traffic.
-overview-egress-changed-note = The address changed — traffic is going through the tunnel.
+# The note under the egress card's rows: when the reading is taken, and the one thing this card
+# deliberately does not do — compare. Whether the address moved is for the reader to notice.
+overview-egress-current-note = Taken at startup and on every connect and disconnect; Measure takes it again. Nothing here is compared: whether the address changed is for you to see, not for us to judge.
 
-# The note under those rows when the address did not change. This is the honest reading of a live
-# tunnel that carries nothing, and it says so without softening — docs/architecture.md §13.
-overview-egress-unchanged-note = The address did not change. If the CLI says "connected", the tunnel is not carrying traffic.
-
-# The note under those rows when there is a current reading but no baseline to compare it against —
-# the address was read before the application started measuring, so it proves nothing.
-overview-egress-no-baseline = There is nothing to compare against: this address was read before we started measuring.
-
-# The note under those rows before anything has been measured: the probe runs after connecting, so
-# there is no tunnel to measure through yet.
-overview-egress-no-tunnel = The probe runs after connecting — the tunnel is not active.
+# The note under those rows before anything has been measured at all: the external check is off in
+# the settings, or no service has answered yet. `Measure` is the button beside the eyebrow.
+overview-egress-none = Nothing measured yet. Press Measure — and if the check is off in the settings, turn it on first.
 
 # The faint paragraph at the bottom of the egress card: why this card may look redundant beside the
 # status. It is a design decision written out, and it stays blunt — the CLI can be wrong about the

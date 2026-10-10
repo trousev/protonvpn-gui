@@ -87,11 +87,10 @@ engine-socks5-listening = listening: connections will only go through the tunnel
 # saying which way it failed.
 engine-socks5-not-listening = not listening: { $detail }
 
-# The console note that records the gate opening: the kernel's source address differs from the one
-# observed while the CLI said the tunnel was down. $candidate and $reference are both IPv4
-# addresses — data — and the wording must not claim the route *is* the tunnel, only that it
-# changed.
-engine-socks5-route-proven = route proven: { $candidate } (it differs from the observed { $reference })
+# The console note that records the gate opening: the route the kernel answers with is pinned, and
+# every dial and the watchdog re-read it. $source is an IPv4 address — data — and the wording must
+# not claim the route *is* the tunnel, only that it is the one being held.
+engine-socks5-route-pinned = route pinned: { $source } (the kernel's answer while the CLI reports a connection)
 
 # The console note that records the gate shutting while it had been open. $reason is one of the
 # `proxy-gate-…` sentences above, and it is the whole explanation — this message only labels it.

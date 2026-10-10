@@ -51,19 +51,9 @@ use crate::update::{self, Installed, Release, UpdateError, Version};
 /// Engine tick. Short enough that streamed output feels live, long enough to be free.
 pub const TICK: Duration = Duration::from_millis(100);
 
-/// How often the route we are *not* using is re-sampled inside the settle window below.
-const REFERENCE_INTERVAL: Duration = Duration::from_millis(500);
-
-/// How long the reference keeps being re-sampled after the CLI says the tunnel is down, and no
-/// longer. The kernel needs a moment to withdraw the tunnel's address, so a reference taken at the
-/// instant of the disconnect could still be the tunnel itself; but sampling forever would let a
-/// connect started from another terminal be mistaken for the reference, which would leave the
-/// proxy shut for the rest of the session.
-const REFERENCE_SETTLE: Duration = Duration::from_secs(3);
-
-/// How often the proxy retries arming itself while the CLI says connected but the evidence is not
-/// there yet. The kernel needs a moment to withdraw or install an address around a reconnect, and
-/// a route sampled a second too early must not condemn the proxy for the whole session.
+/// How often the proxy retries arming itself when the kernel would not answer the route question
+/// at the moment the CLI reported a connection. Around a reconnect an address can be in flight, and
+/// a route read a second too early must not condemn the proxy for the rest of the session.
 const ARM_RETRY: Duration = Duration::from_secs(2);
 
 /// How many dial failures that implicate the path — timeouts, unreachable networks — it takes
@@ -126,7 +116,8 @@ pub trait TrayPresenter: Send + 'static {
 /// Which reading a probe result is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeTarget {
-    Baseline,
+    /// Asked for: by the startup read, by a connect or a disconnect, or by the button on the
+    /// Overview. It is an invocation like any other, so it gets a line in the console.
     Current,
     /// A background check for the SOCKS5 proxy. It is state like any other reading, but it is not
     /// an invocation the user asked for, so it does not write a line into the console — only a
@@ -250,10 +241,11 @@ pub enum Request {
     /// everything else so that there is still exactly one thread that owns state.
     Socks5Report(Socks5Event),
     Ui(UiCommand),
-    /// Internal: the probe fallback chain picked an endpoint (or did not).
+    /// Internal: the probe fallback chain picked an endpoint (or did not), and took the first
+    /// reading with it — one thread, one round trip, one answer about where traffic leaves by.
     ProbeChosen {
         chosen: Option<Probe>,
-        baseline: Option<ProbeResult>,
+        reading: Option<ProbeResult>,
     },
     /// Internal: a reading finished on the probe thread.
     ProbeFinished {
@@ -499,9 +491,7 @@ pub fn spawn(options: EngineOptions) -> EngineHandle {
         socks5_listen: None,
         socks5_stats,
         last_connection: ConnectionStatus::Unknown,
-        route_reference: None,
-        reference_settle_until: None,
-        next_reference_sample: Instant::now(),
+        route_trust_spent: None,
         next_arm_attempt: Instant::now(),
         next_verify: Instant::now(),
         dial_failures: 0,
@@ -619,12 +609,15 @@ struct Engine {
     socks5_stats: Arc<Stats>,
     /// The last connection status we acted on, so a transition is a transition and not a state.
     last_connection: ConnectionStatus,
-    /// The source address the kernel picked while the CLI said the tunnel was down. This is the
-    /// only thing that can make "the route changed" evidence rather than a guess.
-    route_reference: Option<Ipv4Addr>,
-    /// Until when the reference is still being re-sampled, or `None` once it has settled.
-    reference_settle_until: Option<Instant>,
-    next_reference_sample: Instant,
+    /// The reason the route stopped being something this process can pin, once that has happened,
+    /// and `None` until then.
+    ///
+    /// A pin that broke is not a pin worth taking twice on the CLI's word alone: if `status` is
+    /// five minutes stale, "still Connected" is exactly what it says about the café's network the
+    /// laptop has just joined. Only a report that the tunnel is not up — the next half of a
+    /// reconnect — makes the next pin evidence again; until one arrives, this is also the reason
+    /// the gate is shut, which is what the settings card repeats.
+    route_trust_spent: Option<Closed>,
     next_arm_attempt: Instant,
     next_verify: Instant,
     /// Consecutive dial failures that implicate the path, and consecutive unanswered checks.
@@ -664,12 +657,10 @@ impl Engine {
         if self.config.probe_enabled {
             self.choose_probe_async();
         }
-        // The route we are *not* using, sampled before we know anything. If the application starts
-        // while the tunnel is already up this is the tunnel's own address, so the proxy stays shut
-        // until a reconnect shows it a route that changed — fail-closed, and the settings page
-        // says exactly that (`docs/architecture.md` §13).
-        self.sample_reference();
-        self.reference_settle_until = Some(Instant::now() + REFERENCE_SETTLE);
+        // The listener, and the gate it is behind. Arming needs the CLI to say connected, and the
+        // first `status` of the session is what will say it — so an application started while the
+        // tunnel is already up opens the gate on that reading, pinning whatever route the kernel
+        // answers with then (`docs/architecture.md` §13).
         self.restart_socks5();
 
         // The `.old` file a previous update left beside the image is deleted here and nowhere else:
@@ -718,27 +709,17 @@ impl Engine {
     fn run_due_timers(&mut self) {
         let now = Instant::now();
 
-        // While the CLI says the tunnel is down, keep a fresh picture of the route we are *not*
-        // using — but only for the few seconds it takes the kernel to withdraw the tunnel's
-        // address. After that the reference is frozen until the next disconnect, so that a connect
-        // we did not initiate cannot be mistaken for it.
-        if let Some(until) = self.reference_settle_until {
-            if now >= until {
-                self.reference_settle_until = None;
-            } else if now >= self.next_reference_sample {
-                self.next_reference_sample = now + REFERENCE_INTERVAL;
-                self.sample_reference();
-            }
-        }
-
-        // Connected, enabled, and no evidence yet: try again. This only ever runs while the gate
-        // is closed for *lack* of evidence, never over a verdict the evidence already gave.
+        // Connected, enabled, and the kernel would not answer the route question yet: ask again.
+        // This only ever runs while the gate is closed for *lack* of an answer — never over a
+        // verdict the kernel has already given, and never after a pin that broke.
         if self.config.socks5.enabled
             && self.socks5.is_some()
             && self.state.connection.value.is_connected()
             && matches!(
                 self.gate.state(),
-                GateState::Closed(Closed::Unverified { .. } | Closed::NotConnected)
+                GateState::Closed(Closed::RouteLost {
+                    detail: RouteLoss::Unreadable(_)
+                })
             )
             && now >= self.next_arm_attempt
         {
@@ -783,11 +764,11 @@ impl Engine {
         }
 
         // The proxy's background tunnel check (exception #1 doing the work it was sanctioned for).
-        // It runs while the CLI says connected, whether or not the gate is open: a gate closed on
-        // suspicion must be able to reopen on evidence, not only on a reconnect.
+        // It runs while the CLI says connected, whether or not the gate is open: the reading on the
+        // Overview is kept current, and a path that stops answering closes the gate.
         if self.should_watch() && now >= self.next_verify {
             self.next_verify = now + self.verify_interval();
-            self.watch_tunnel();
+            self.probe_async(ProbeTarget::Watch);
         }
 
         if self.schedule.idle_due(now) {
@@ -884,16 +865,11 @@ impl Engine {
                 let mut shared = self.lock();
                 shared.ui_commands.push_back(command);
             }
-            Request::ProbeChosen { chosen, baseline } => {
+            Request::ProbeChosen { chosen, reading } => {
                 self.probe_in_flight = false;
                 self.probe = chosen;
-                if let Some(baseline) = baseline {
-                    self.apply_probe(
-                        ProbeTarget::Baseline,
-                        baseline,
-                        SystemTime::now(),
-                        Duration::ZERO,
-                    );
+                if let Some(reading) = reading {
+                    self.apply_probe(reading, SystemTime::now());
                 }
                 if self.probe.is_none() {
                     self.note(&self.i18n.engine_probe_unavailable());
@@ -922,7 +898,7 @@ impl Engine {
                         duration,
                     );
                 }
-                self.apply_probe(target, result, started_at, duration);
+                self.apply_probe(result, started_at);
                 if target == ProbeTarget::Watch {
                     self.judge_watch(answered);
                 }
@@ -961,9 +937,6 @@ impl Engine {
             self.active_port_forwarding = Some(target.port_forwarding);
         }
         if intent.changes_connection_state() {
-            // A fresh baseline before we move the tunnel: "did the egress change?" is only
-            // answerable if we know what it was.
-            self.take_baseline_async();
             if self.lease.is_some() {
                 let why = self.i18n.engine_lease_why_before_connect();
                 self.release_lease(&why);
@@ -1126,8 +1099,8 @@ impl Engine {
             };
             self.state = next;
             // Before it is published: a view must never see a connection state the proxy has not
-            // reacted to yet, or the reference could still be re-sampling while the window says
-            // the tunnel is up.
+            // reacted to yet — the window and the gate must never disagree about whether the
+            // tunnel is up.
             self.observe_connection();
             self.publish_state();
             self.react_to(&event, id);
@@ -1434,6 +1407,7 @@ impl Engine {
 
     fn save_config(&mut self, config: Config) {
         let socks5_changed = config.socks5 != self.config.socks5;
+        let probe_switched_on = config.probe_enabled && !self.config.probe_enabled;
         let updater_switched_on = config.update.policy != UpdatePolicy::Off
             && self.config.update.policy == UpdatePolicy::Off;
         match self.store.save(&config) {
@@ -1445,6 +1419,11 @@ impl Engine {
                 drop(shared);
                 if socks5_changed {
                     self.restart_socks5();
+                }
+                if probe_switched_on {
+                    // Switching the check on is a request to read, not an instruction to wait for
+                    // the next connect: the card would otherwise sit at "—" until one happens.
+                    self.probe_async(ProbeTarget::Current);
                 }
                 if updater_switched_on && !self.update_busy() {
                     // Switching it on is a request to look, not an instruction to wait a day. The
@@ -1465,6 +1444,8 @@ impl Engine {
 
     // --- ground truth (exception #1) -------------------------------------------------------
 
+    /// Picks an endpoint for the session and takes the first reading with it: which service answers
+    /// and what it says are one question, asked on one thread.
     fn choose_probe_async(&mut self) {
         if self.probe_in_flight {
             return;
@@ -1475,29 +1456,38 @@ impl Engine {
             .name("protonvpn-probe".into())
             .spawn(move || {
                 let chosen = Probe::choose();
-                let baseline = chosen.as_ref().map(|probe| probe.read(probe::Family::V4));
-                let _ = tx.send(Request::ProbeChosen { chosen, baseline });
+                let reading = chosen.as_ref().map(|probe| probe.read(probe::Family::V4));
+                let _ = tx.send(Request::ProbeChosen { chosen, reading });
             })
             .ok();
     }
 
-    fn take_baseline_async(&mut self) {
-        if !self.config.probe_enabled {
+    /// One reading, on a thread of its own. The result comes back as a `Request`, like every other
+    /// reading.
+    ///
+    /// This is the whole of what the probe is asked: where does traffic leave by *now*. It is read
+    /// at startup, whenever the CLI's verdict on the connection changes, and when the user presses
+    /// the button — never as a comparison with an earlier answer (`docs/architecture.md` §8).
+    fn probe_async(&mut self, target: ProbeTarget) {
+        if !self.config.probe_enabled || self.probe_in_flight {
             return;
         }
         let Some(probe) = self.probe.clone() else {
+            // No endpoint was ever picked — the check was switched on after startup, say. Picking
+            // one reads it once, and that reading is the answer.
             self.choose_probe_async();
             return;
         };
+        self.probe_in_flight = true;
         let tx = self.tx.clone();
         thread::Builder::new()
-            .name("protonvpn-probe-baseline".into())
+            .name("protonvpn-probe-reading".into())
             .spawn(move || {
                 let started_at = SystemTime::now();
                 let result = probe.read(probe::Family::V4);
                 let duration = since(started_at);
                 let _ = tx.send(Request::ProbeFinished {
-                    target: ProbeTarget::Baseline,
+                    target,
                     endpoint: probe.endpoint(),
                     result,
                     started_at,
@@ -1512,47 +1502,21 @@ impl Engine {
             self.note(&self.i18n.engine_probe_disabled());
             return;
         }
-        let Some(probe) = self.probe.clone() else {
+        if self.probe.is_none() {
             self.note(&self.i18n.engine_probe_unavailable());
             return;
-        };
-        if self.probe_in_flight {
-            return;
         }
-        self.probe_in_flight = true;
-        let tx = self.tx.clone();
-        thread::Builder::new()
-            .name("protonvpn-probe-current".into())
-            .spawn(move || {
-                let started_at = SystemTime::now();
-                let result = probe.read(probe::Family::V4);
-                let duration = since(started_at);
-                let _ = tx.send(Request::ProbeFinished {
-                    target: ProbeTarget::Current,
-                    endpoint: probe.endpoint(),
-                    result,
-                    started_at,
-                    duration,
-                });
-            })
-            .ok();
+        self.probe_async(ProbeTarget::Current);
     }
 
-    fn apply_probe(
-        &mut self,
-        target: ProbeTarget,
-        result: ProbeResult,
-        at: SystemTime,
-        _duration: Duration,
-    ) {
+    /// Keeps the one reading there is.
+    ///
+    /// A reading that failed changes nothing: the last answer is still the last thing we know, and
+    /// its age is what the card shows (§7). Inventing an empty egress out of a timeout would be
+    /// worse than showing an old one.
+    fn apply_probe(&mut self, result: ProbeResult, at: SystemTime) {
         if let Ok(reading) = result {
-            let observation = Observation::at(reading, at);
-            match target {
-                ProbeTarget::Baseline => self.state.egress.baseline = Some(observation),
-                ProbeTarget::Current | ProbeTarget::Watch => {
-                    self.state.egress.current = Some(observation)
-                }
-            }
+            self.state.egress = Some(Observation::at(reading, at));
             self.publish_state();
         }
     }
@@ -1819,32 +1783,25 @@ impl Engine {
         self.socks5_listen = None;
     }
 
-    /// Keeps a picture of the route the tunnel is *not* using. Only ever taken while the CLI says
-    /// the tunnel is down, or before we know anything at all.
-    fn sample_reference(&mut self) {
-        self.route_reference = self.route.source().ok();
-    }
-
-    /// Watches the CLI's verdict for the transitions the proxy cares about.
+    /// Watches the CLI's verdict for the transitions the proxy cares about, and keeps the one
+    /// egress reading in step with it.
     fn observe_connection(&mut self) {
         let connected = self.state.connection.value.is_connected();
         let was_connected = self.last_connection.is_connected();
         self.last_connection = self.state.connection.value.clone();
 
-        // `Connecting` and `Error` are deliberately not reference material: during a server switch
-        // the tunnel is usually still up, and a reference taken then would be the tunnel's own
-        // address — which would shut the proxy for the rest of the session.
-        if matches!(
-            self.state.connection.value,
-            ConnectionStatus::Unknown | ConnectionStatus::Disconnected
-        ) {
-            if self.reference_settle_until.is_none() {
-                self.reference_settle_until = Some(Instant::now() + REFERENCE_SETTLE);
-                self.next_reference_sample = Instant::now();
-                self.sample_reference();
-            }
-        } else {
-            self.reference_settle_until = None;
+        // Anything that is not a connection is the second half of a reconnect, and it is what makes
+        // the next pin trustworthy again: the tunnel the route belonged to is gone, so whatever the
+        // kernel answers with next is a fresh start rather than a stale status read.
+        if !connected {
+            self.route_trust_spent = None;
+        }
+
+        // The address traffic leaves by is exactly what this verdict is about, so every move of it
+        // gets a fresh reading: connecting, disconnecting, and a CLI that fails instead. The card
+        // then shows the new address with its own age (`docs/architecture.md` §7, §8).
+        if connected != was_connected {
+            self.probe_async(ProbeTarget::Current);
         }
 
         if !connected {
@@ -1858,11 +1815,14 @@ impl Engine {
         }
     }
 
-    /// Opens the gate if the evidence is there, and closes it with the reason if it is not.
+    /// Pins the route the CLI's connection is using, or closes the gate with the reason it cannot.
     ///
-    /// The evidence is one comparison: the route now must differ from a route observed while the
-    /// CLI said the tunnel was down. That is the routing-level twin of "did the egress address
-    /// change?" (`docs/architecture.md` §8), and it needs nothing but the kernel's own answer.
+    /// The evidence is the kernel's own answer to "which source address would an off-link packet
+    /// use", read now and pinned. There is deliberately no earlier answer to compare it against:
+    /// the application may well have started with the tunnel already up, and then the only route it
+    /// has ever seen *is* the tunnel's. What the pin buys is everything that happens after it —
+    /// every dial and the watchdog re-read it, so a route that moves or disappears closes the gate
+    /// (`docs/architecture.md` §13).
     fn arm_socks5(&mut self) {
         if !self.config.socks5.enabled || self.socks5.is_none() {
             return;
@@ -1874,78 +1834,74 @@ impl Engine {
             }
             return;
         }
+        if let Some(spent) = self.route_trust_spent.clone() {
+            // The route moved under an open gate, and "the CLI still says connected" is not enough
+            // to pin a new one: that is exactly what a five-minute-old status says about a network
+            // the machine has since left. The gate stays closed, and says why — a restart of the
+            // listener must not leave the card claiming the proxy is simply off.
+            self.close_gate(spent);
+            return;
+        }
         let candidate = match self.route.source() {
             Ok(candidate) => candidate,
             Err(error) => {
-                self.close_gate(Closed::RouteLost {
+                // Nothing was pinned, so nothing is spent: the kernel may simply not have the
+                // answer yet, and the retry loop asks again in a moment.
+                self.shut_gate(Closed::RouteLost {
                     detail: RouteLoss::Unreadable(error),
                 });
+                self.publish_socks5();
                 return;
             }
         };
-        match self.route_reference {
-            Some(reference) if reference != candidate => {
-                // Already armed on exactly this address: nothing changed, and the console does not
-                // need to hear it twice.
-                if self.gate.state() == (GateState::Open { source: candidate }) {
-                    return;
-                }
-                self.dial_failures = 0;
-                self.gate.open(candidate);
-                self.publish_socks5();
-                self.note_socks5(
-                    self.i18n
-                        .engine_socks5_route_proven(candidate.to_string(), reference.to_string()),
-                );
-            }
-            _ => {
-                self.shut_gate(Closed::Unverified { candidate });
-                self.publish_socks5();
-            }
+        // Already armed on exactly this address: nothing changed, and the console does not need to
+        // hear it twice.
+        if self.gate.state() == (GateState::Open { source: candidate }) {
+            return;
         }
+        self.dial_failures = 0;
+        self.gate.open(candidate);
+        self.publish_socks5();
+        self.note_socks5(self.i18n.engine_socks5_route_pinned(candidate.to_string()));
     }
 
     /// Closes the gate and drops everything it was protecting, without a word. Used where the
     /// caller is about to say what is happening anyway — a restart, a listener that never came up.
     fn shut_gate(&mut self, reason: Closed) {
-        self.gate.close(reason.clone());
-        if self.withdraws_the_reference(&reason) {
-            // The route we were comparing against is spent: it was taken before the tunnel moved
-            // under us. Arming again needs a *fresh* observation of a route the CLI called
-            // down — which is what a reconnect gives us, and what nothing else can fake.
-            self.route_reference = None;
-        }
+        self.gate.close(reason);
         if let Some(server) = &self.socks5 {
             server.drop_connections();
         }
     }
 
-    /// Does this close mean the evidence itself is no longer trustworthy?
-    ///
-    /// Only the reasons that say *the route is not what we thought*: a listener that is not there
-    /// or a user who switched the proxy off says nothing about the route, and armouring those with
-    /// a lost reference would only mean re-arming after fixing a port number.
-    fn withdraws_the_reference(&self, reason: &Closed) -> bool {
-        matches!(
-            reason,
-            Closed::RouteChanged { .. }
-                | Closed::RouteLost { .. }
-                | Closed::EgressIsBaseline { .. }
-                | Closed::ProbeUnanswered { .. }
-        )
-    }
-
-    /// Closes the gate, says so once if it had been open, and withdraws evidence that no longer
-    /// holds.
+    /// Closes the gate, says so once if it had been open, and remembers that the pin must not be
+    /// taken again on the CLI's word alone when the route is what failed.
     fn close_gate(&mut self, reason: Closed) {
         let was_open = self.gate.is_open();
         let changed = self.gate.state() != GateState::Closed(reason.clone());
+        if self.spends_the_trust(&reason) {
+            self.route_trust_spent = Some(reason.clone());
+        }
         self.shut_gate(reason.clone());
         self.publish_socks5();
         if !changed || !was_open {
             return;
         }
         self.note_socks5(self.i18n.engine_socks5_closed(reason.describe(&self.i18n)));
+    }
+
+    /// Does closing for this reason mean the route is not what it was pinned to?
+    ///
+    /// Only the reasons that say so: the kernel moved, the pinned address is gone, or the dials and
+    /// the external checks say the path stopped carrying anything. A listener that is not there or
+    /// a user who switched the proxy off says nothing about the route; and a route the kernel would
+    /// not answer while *arming* had no pin to break, which is why [`Self::arm_socks5`] closes that
+    /// one without going through here.
+    fn spends_the_trust(&self, reason: &Closed) -> bool {
+        matches!(
+            reason,
+            Closed::RouteChanged { .. } | Closed::RouteLost { .. } | Closed::ProbeUnanswered { .. }
+        )
     }
 
     /// Reports from the proxy's own threads.
@@ -1982,68 +1938,22 @@ impl Engine {
 
     /// What a background tunnel check concluded.
     ///
-    /// `None` from `egress_changed` is a real answer — no baseline, or a different endpoint — and
-    /// it means "cannot tell", on which we claim nothing (`docs/architecture.md` §5).
+    /// The reading itself is never a verdict: it says where traffic leaves by, and what to make of
+    /// that is the reader's business (`docs/architecture.md` §8). The one conclusion a check can
+    /// reach is about itself — silence is not evidence about the route or the egress, only about
+    /// the path — and two silences in a row shut the gate rather than let it relay into a path that
+    /// answers nothing.
     fn judge_watch(&mut self, answered: bool) {
-        if !answered {
-            self.probe_failures += 1;
-            if self.probe_failures >= WATCH_FAILURE_LIMIT {
-                self.close_gate(Closed::ProbeUnanswered {
-                    detail: self.i18n.engine_socks5_two_probes_silent(),
-                });
-            }
+        if answered {
+            self.probe_failures = 0;
             return;
         }
-        self.probe_failures = 0;
-        match self.state.egress.egress_changed() {
-            // The egress is the pre-connection address again, so the tunnel is not carrying
-            // traffic whatever the CLI says. This is the one thing no CLI output can tell us.
-            Some(false) => {
-                let ip = self
-                    .state
-                    .egress
-                    .current
-                    .as_ref()
-                    .map(|reading| reading.value.ip);
-                if let Some(ip) = ip {
-                    self.close_gate(Closed::EgressIsBaseline { ip });
-                }
-            }
-            // And the reverse: proof that traffic is going somewhere else reopens a gate that was
-            // closed on suspicion.
-            Some(true) => {
-                self.dial_failures = 0;
-                if !self.gate.is_open() {
-                    self.arm_socks5();
-                }
-            }
-            None => {}
+        self.probe_failures += 1;
+        if self.probe_failures >= WATCH_FAILURE_LIMIT {
+            self.close_gate(Closed::ProbeUnanswered {
+                detail: self.i18n.engine_socks5_two_probes_silent(),
+            });
         }
-    }
-
-    /// One background reading, on a thread of its own. The result comes back as a `Request`, like
-    /// every other reading.
-    fn watch_tunnel(&mut self) {
-        let Some(probe) = self.probe.clone() else {
-            return;
-        };
-        self.probe_in_flight = true;
-        let tx = self.tx.clone();
-        thread::Builder::new()
-            .name("protonvpn-socks5-watch".into())
-            .spawn(move || {
-                let started_at = SystemTime::now();
-                let result = probe.read(probe::Family::V4);
-                let duration = since(started_at);
-                let _ = tx.send(Request::ProbeFinished {
-                    target: ProbeTarget::Watch,
-                    endpoint: probe.endpoint(),
-                    result,
-                    started_at,
-                    duration,
-                });
-            })
-            .ok();
     }
 
     /// A proxy lifecycle line in the console. It is not a `protonvpn` command, so it is a note,
@@ -2534,6 +2444,9 @@ esac
     /// machine's network.
     const LAN: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 10);
     const TUNNEL: Ipv4Addr = Ipv4Addr::new(10, 2, 0, 2);
+    /// Somebody else's network — a café, a hotel — which is what a laptop that moved finds under a
+    /// `status` that still says Connected.
+    const CAFE: Ipv4Addr = Ipv4Addr::new(192, 168, 50, 20);
 
     fn test_route(answer: Ipv4Addr) -> Arc<ScriptedRoute> {
         ScriptedRoute::new(answer)
@@ -3033,9 +2946,9 @@ esac
     }
 
     #[test]
-    fn the_proxy_opens_only_on_a_route_that_changed_and_closes_with_the_tunnel() {
+    fn the_proxy_pins_the_route_it_finds_and_closes_with_the_tunnel() {
         let dir = TempDir::new("socks5-gate");
-        let route = test_route(LAN);
+        let route = test_route(TUNNEL);
         let handle = start_with_proxy(&dir, Arc::clone(&route));
 
         // It listens straight away, and refuses: the CLI has not said connected yet.
@@ -3050,23 +2963,17 @@ esac
         );
         assert_eq!(shared.socks5.stats.snapshot().dialed, 0);
 
-        // The CLI reports a connection and the kernel's route moves to the tunnel.
-        // Wait until the engine has left the disconnected state — `Connecting`, or already
-        // `Connected`. Only then is the reference settled, so the route can move to where the
-        // tunnel puts it without the reference following it there.
+        // The CLI reports a connection, and the address the kernel answers with is pinned exactly
+        // as it is. Nothing is compared with anything: there is no earlier route to compare it to.
         handle.send(Request::Run(Intent::Connect(ConnectTarget::fastest())));
-        wait_for(&handle, "the connect to start", |shared| {
-            matches!(
-                shared.state.connection.value,
-                ConnectionStatus::Connecting | ConnectionStatus::Connected(_)
-            )
-        });
-        route.set(TUNNEL);
         let armed = wait_for(&handle, "the gate to open", |shared| {
-            matches!(
-                shared.socks5.gate.state(),
-                GateState::Open { source } if source == TUNNEL
-            )
+            // The gate and the connection state are published one after the other, so a snapshot
+            // can hold an open gate beside the previous verdict. Both have to be true at once.
+            shared.state.connection.value.is_connected()
+                && matches!(
+                    shared.socks5.gate.state(),
+                    GateState::Open { source } if source == TUNNEL
+                )
         })
         .unwrap();
         assert!(armed.state.connection.value.is_connected());
@@ -3081,53 +2988,34 @@ esac
     }
 
     #[test]
-    fn a_proxy_enabled_while_connected_stays_shut_until_a_route_it_can_compare_against() {
-        // The application started while the tunnel was already up, so every route it has ever seen
-        // is the tunnel's own: it cannot claim the route changed, and it says so instead of
-        // pretending. This is the fail-closed reading of `docs/architecture.md` §13.
-        let dir = TempDir::new("socks5-unverified");
+    fn a_proxy_started_while_the_tunnel_is_already_up_pins_what_it_finds() {
+        // The reported bug, pinned: the GUI is restarted and the VPN is not, so the first route
+        // this process ever sees is the tunnel's own. Nothing was "observed before connecting" and
+        // nothing is asked for — the CLI says connected, the kernel answers, and that answer is
+        // pinned (`docs/architecture.md` §13).
+        let dir = TempDir::new("socks5-already-up");
         let route = test_route(TUNNEL);
+        // The stand-in reports `Status: Connected` from the very first `status` of the session.
+        fs::write(dir.path().join("protonvpn.connected"), b"").unwrap();
         let handle = start_with_proxy(&dir, Arc::clone(&route));
 
-        // The stand-in reports `Disconnected` until a `connect` runs, so put it in the connected
-        // state the only way the stand-in understands — and keep the route the tunnel's address
-        // throughout, which is exactly the situation under test.
-        handle.send(Request::Run(Intent::Connect(ConnectTarget::fastest())));
-        wait_for(&handle, "the connection", |shared| {
+        let shared = wait_for(&handle, "the gate to open", |shared| {
             shared.state.connection.value.is_connected()
-        });
-        let shared = wait_for(&handle, "the verdict", |shared| {
-            matches!(
-                shared.socks5.gate.state(),
-                GateState::Closed(Closed::Unverified { .. })
-            )
+                && matches!(
+                    shared.socks5.gate.state(),
+                    GateState::Open { source } if source == TUNNEL
+                )
         })
         .unwrap();
-        let GateState::Closed(Closed::Unverified { candidate }) = shared.socks5.gate.state() else {
-            unreachable!("just matched")
-        };
-        assert_eq!(candidate, TUNNEL);
-        // ...and it keeps refusing, however long the state stays connected.
-        thread::sleep(Duration::from_millis(300));
-        assert!(!handle.snapshot().socks5.gate.is_open());
+        assert_eq!(shared.socks5.stats.snapshot().dialed, 0);
     }
 
     #[test]
     fn a_route_that_diverges_closes_the_gate_and_drops_what_was_relayed() {
         let dir = TempDir::new("socks5-diverged");
-        let route = test_route(LAN);
+        let route = test_route(TUNNEL);
         let handle = start_with_proxy(&dir, Arc::clone(&route));
-        // Wait until the engine has left the disconnected state — `Connecting`, or already
-        // `Connected`. Only then is the reference settled, so the route can move to where the
-        // tunnel puts it without the reference following it there.
         handle.send(Request::Run(Intent::Connect(ConnectTarget::fastest())));
-        wait_for(&handle, "the connect to start", |shared| {
-            matches!(
-                shared.state.connection.value,
-                ConnectionStatus::Connecting | ConnectionStatus::Connected(_)
-            )
-        });
-        route.set(TUNNEL);
         wait_for(&handle, "the gate to open", |shared| {
             shared.socks5.gate.is_open()
         });
@@ -3150,19 +3038,9 @@ esac
     #[test]
     fn one_dead_destination_is_not_a_dead_tunnel_but_two_are() {
         let dir = TempDir::new("socks5-dial-failures");
-        let route = test_route(LAN);
+        let route = test_route(TUNNEL);
         let handle = start_with_proxy(&dir, Arc::clone(&route));
-        // Wait until the engine has left the disconnected state — `Connecting`, or already
-        // `Connected`. Only then is the reference settled, so the route can move to where the
-        // tunnel puts it without the reference following it there.
         handle.send(Request::Run(Intent::Connect(ConnectTarget::fastest())));
-        wait_for(&handle, "the connect to start", |shared| {
-            matches!(
-                shared.state.connection.value,
-                ConnectionStatus::Connecting | ConnectionStatus::Connected(_)
-            )
-        });
-        route.set(TUNNEL);
         wait_for(&handle, "the gate to open", |shared| {
             shared.socks5.gate.is_open()
         });
@@ -3195,23 +3073,15 @@ esac
     }
 
     #[test]
-    fn a_route_that_diverged_is_not_rearmed_by_a_route_change_alone() {
+    fn a_route_that_diverged_is_not_rearmed_by_the_cli_saying_connected() {
         // The case this pins: a laptop that moves networks while `protonvpn status` still says
         // Connected from five minutes ago. The kernel's route is now a café's, the gate must shut,
-        // and "a different route than the one we remember" must not be mistaken for a tunnel —
-        // the reference that opened the gate is spent, and only a fresh look at a route the CLI
-        // calls down can replace it.
-        let dir = TempDir::new("socks5-withdrawn");
-        let route = test_route(LAN);
+        // and "the CLI still says connected" must not be enough to pin the new one — the tunnel has
+        // to be reported gone first, which is what a reconnect does (`docs/architecture.md` §13).
+        let dir = TempDir::new("socks5-spent");
+        let route = test_route(TUNNEL);
         let handle = start_with_proxy(&dir, Arc::clone(&route));
         handle.send(Request::Run(Intent::Connect(ConnectTarget::fastest())));
-        wait_for(&handle, "the connect to start", |shared| {
-            matches!(
-                shared.state.connection.value,
-                ConnectionStatus::Connecting | ConnectionStatus::Connected(_)
-            )
-        });
-        route.set(TUNNEL);
         wait_for(&handle, "the gate to open", |shared| {
             shared.socks5.gate.is_open()
         });
@@ -3219,7 +3089,7 @@ esac
         handle.send(Request::Socks5Report(Socks5Event::RouteDiverged {
             reason: Closed::RouteChanged {
                 expected: TUNNEL,
-                observed: Some(LAN),
+                observed: Some(CAFE),
             },
         }));
         wait_for(&handle, "the gate to close", |shared| {
@@ -3229,28 +3099,49 @@ esac
             )
         });
 
-        // A third route, and a CLI that still believes it is connected.
-        let cafe = Ipv4Addr::new(192, 168, 50, 20);
-        route.set(cafe);
+        // Switching the proxy off and on restarts the listener; it must not silently replace the
+        // reason with "the proxy is off", which would be a lie about a running proxy and would hide
+        // the one line that says what to do about it.
+        let mut off = handle.snapshot().config.clone();
+        off.socks5.enabled = false;
+        handle.send(Request::SaveConfig(Box::new(off)));
+        wait_for(&handle, "the listener to stop", |shared| {
+            shared.socks5.listen.is_none()
+        });
+        let mut on = handle.snapshot().config.clone();
+        on.socks5.enabled = true;
+        handle.send(Request::SaveConfig(Box::new(on)));
+        wait_for(
+            &handle,
+            "the listener to come back with its reason",
+            |shared| {
+                shared.socks5.listen.is_some()
+                    && matches!(
+                        shared.socks5.gate.state(),
+                        GateState::Closed(Closed::RouteChanged { .. })
+                    )
+            },
+        );
+
+        // A third route, and a CLI that still believes it is connected: the retry loop asks the
+        // kernel again — and the answer opens nothing, because this report is not a fresh start.
+        route.set(CAFE);
+        handle.send(Request::Run(Intent::RefreshStatus));
+        wait_for(&handle, "the fresh status", |shared| {
+            shared.state.connection.value.is_connected()
+        });
         thread::sleep(Duration::from_millis(2500));
         assert!(
             !handle.snapshot().socks5.gate.is_open(),
-            "a new route, on its own, is not evidence of a tunnel"
+            "a route the CLI calls connected is not a pin it can buy twice"
         );
 
-        // What does re-arm it: the CLI reporting the tunnel down (a fresh reference), then up.
+        // What does re-arm it: the CLI reporting the tunnel down, then up again.
         handle.send(Request::Run(Intent::Disconnect));
         wait_for(&handle, "the disconnect", |shared| {
             shared.state.connection.value == ConnectionStatus::Disconnected
         });
         handle.send(Request::Run(Intent::Connect(ConnectTarget::fastest())));
-        wait_for(&handle, "the second connect to start", |shared| {
-            matches!(
-                shared.state.connection.value,
-                ConnectionStatus::Connecting | ConnectionStatus::Connected(_)
-            )
-        });
-        route.set(TUNNEL);
         wait_for(&handle, "the gate to open again", |shared| {
             shared.socks5.gate.is_open()
         });
@@ -3259,16 +3150,9 @@ esac
     #[test]
     fn a_relayed_connection_clears_the_failure_count() {
         let dir = TempDir::new("socks5-dial-reset");
-        let route = test_route(LAN);
+        let route = test_route(TUNNEL);
         let handle = start_with_proxy(&dir, Arc::clone(&route));
         handle.send(Request::Run(Intent::Connect(ConnectTarget::fastest())));
-        wait_for(&handle, "the connect to start", |shared| {
-            matches!(
-                shared.state.connection.value,
-                ConnectionStatus::Connecting | ConnectionStatus::Connected(_)
-            )
-        });
-        route.set(TUNNEL);
         wait_for(&handle, "the gate to open", |shared| {
             shared.socks5.gate.is_open()
         });
@@ -3301,23 +3185,12 @@ esac
     #[test]
     fn the_console_gets_the_lifecycle_and_not_every_connection() {
         let dir = TempDir::new("socks5-console");
-        let route = test_route(LAN);
+        let route = test_route(TUNNEL);
         let handle = start_with_proxy(&dir, Arc::clone(&route));
         wait_for(&handle, "the listener", |shared| {
             shared.socks5.listen.is_some()
         });
-
-        // Wait until the engine has left the disconnected state — `Connecting`, or already
-        // `Connected`. Only then is the reference settled, so the route can move to where the
-        // tunnel puts it without the reference following it there.
         handle.send(Request::Run(Intent::Connect(ConnectTarget::fastest())));
-        wait_for(&handle, "the connect to start", |shared| {
-            matches!(
-                shared.state.connection.value,
-                ConnectionStatus::Connecting | ConnectionStatus::Connected(_)
-            )
-        });
-        route.set(TUNNEL);
         wait_for(&handle, "the gate to open", |shared| {
             shared.socks5.gate.is_open()
         });
@@ -3330,7 +3203,7 @@ esac
         let transcript = handle.bus().lock().unwrap().transcript();
         assert!(transcript.contains("SOCKS5"), "{transcript}");
         assert!(transcript.contains("listening:"), "{transcript}");
-        assert!(transcript.contains("route proven:"), "{transcript}");
+        assert!(transcript.contains("route pinned:"), "{transcript}");
         assert!(transcript.contains("closed:"), "{transcript}");
     }
 
@@ -3360,7 +3233,7 @@ esac
     fn a_client_through_the_engine_proxy_is_refused_and_then_relayed() {
         use std::io::{Read, Write};
         let dir = TempDir::new("socks5-end-to-end");
-        let route = test_route(LAN);
+        let route = test_route(TUNNEL);
         let handle = start_with_proxy(&dir, Arc::clone(&route));
         let listen = wait_for(&handle, "the listener", |shared| {
             shared.socks5.listen.is_some()
@@ -3394,15 +3267,9 @@ esac
         assert_eq!(code, 0x02, "not allowed by ruleset");
         assert_eq!(handle.snapshot().socks5.stats.snapshot().refused, 1);
 
-        // Open it the way the engine does: the CLI reports a connection and the route moves.
+        // Open it the way the engine does: the CLI reports a connection, and the route the kernel
+        // answers with is pinned.
         handle.send(Request::Run(Intent::Connect(ConnectTarget::fastest())));
-        wait_for(&handle, "the connect to start", |shared| {
-            matches!(
-                shared.state.connection.value,
-                ConnectionStatus::Connecting | ConnectionStatus::Connected(_)
-            )
-        });
-        route.set(TUNNEL);
         wait_for(&handle, "the gate to open", |shared| {
             shared.socks5.gate.is_open()
         });

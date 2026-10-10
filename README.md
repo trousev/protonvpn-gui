@@ -307,17 +307,20 @@ someone to mean it.
 - **No per-server browser.** `protonvpn servers` only prints a web link, so load and latency per
   server are not available. Country and city granularity is.
 - **GeoIP from the probe is display-only.** The same address was reported as NL by `ipinfo.io` and
-  US by `ifconfig.co`; only "did the egress address change from the baseline?" means anything.
+  US by `ifconfig.co`. The probe shows the current address, country and provider with the age of
+  the reading, and compares nothing: whether the address moved is yours to see, not ours to judge.
 - **Closing the window destroys it; the tray recreates it.** winit cannot hide a window on
   Wayland at all (`set_visible` is a no-op there), so "close to tray" is implemented by destroying
   the window and opening a new one from the tray. That is also why the app is an `iced::daemon`
   and not an `iced::application`: an application exits when its last window is destroyed.
 - **The SOCKS5 proxy is a door, not a firewall.** It relays one application's traffic while the
-  tunnel is proven and refuses when it is not; it does not stop the application from ignoring its
-  proxy setting, and while the door is open any local process can use it. Its blind spot is the
-  source address it pins: a route change that keeps the same source address is invisible to it,
-  and between the route check and the connect sit the name lookup and the dial — up to ten
-  seconds in which a route that moves can expose the destination and your real address, though no
+  route the kernel answered with holds, and refuses when it does not: the route is re-read around
+  every dial and every 200 ms, and a route that moves, vanishes or stops answering closes the door
+  and drops what was relaying. It does not stop the application from ignoring its proxy setting,
+  and while the door is open any local process can use it. A tunnel that is routed but carries
+  nothing is not detected — the reading on the Overview is what you have to look at. So is the
+  window between the route check and the connect: the name lookup and the dial, up to ten seconds
+  in which a route that moves can expose the destination and your real address, though no
   application byte. All of it is in `docs/architecture.md` §13.2. Turn on the CLI's own kill
   switch if you want the network itself to be unforgiving.
 - **Desktop notifications are not implemented.** They would need either another program or the

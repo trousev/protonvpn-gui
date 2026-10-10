@@ -178,8 +178,9 @@ impl PortForwarding {
     }
 }
 
-/// Where a ground-truth reading came from. Baseline and current readings must use the same one,
-/// or a GeoIP disagreement could masquerade as a state change (`docs/architecture.md` §8).
+/// Where a ground-truth reading came from. One service for the whole session, so that two readings
+/// can be held side by side by eye without a GeoIP database's opinion in between — the application
+/// itself compares nothing (`docs/architecture.md` §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeEndpoint {
     IfConfigCo,
@@ -215,26 +216,12 @@ pub struct EgressReading {
     pub asn_org: Option<String>,
 }
 
-/// The probe's two readings, kept side by side.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Egress {
-    /// Taken before we asked for a connection. The tunnel question is "did this change?".
-    pub baseline: Option<Observation<EgressReading>>,
-    /// Latest reading, typically taken after a connect.
-    pub current: Option<Observation<EgressReading>>,
-}
-
-impl Egress {
-    /// Did traffic actually start going somewhere else? `None` when we cannot tell — which is not
-    /// the same as "yes" or "no".
-    pub fn egress_changed(&self) -> Option<bool> {
-        let (baseline, current) = (self.baseline.as_ref()?, self.current.as_ref()?);
-        if baseline.value.endpoint != current.value.endpoint {
-            return None;
-        }
-        Some(baseline.value.ip != current.value.ip)
-    }
-}
+/// The probe's reading: where traffic leaves by, as an outside service sees it right now.
+///
+/// One reading and no second one to compare it against. Whether the address changed is something
+/// the reader can see for themselves — and whether it *should* have changed is a question this
+/// application deliberately does not answer (`docs/architecture.md` §8).
+pub type Egress = Observation<EgressReading>;
 
 /// Runner status — "working / idle", independent of connection status.
 ///
@@ -267,7 +254,10 @@ pub struct AppState {
     pub settings: Option<Observation<Vec<Setting>>>,
     pub last_error: Option<Observation<CliError>>,
     pub port_forwarding: Observation<PortForwarding>,
-    pub egress: Egress,
+    /// Read at startup, after every connect and disconnect, and on demand. There is no second
+    /// reading kept beside it on purpose: the card shows what the outside sees now, with the age of
+    /// the answer, and the user is the one who notices that it moved.
+    pub egress: Option<Egress>,
     /// Last invocation that completed, for the collapsed console. Purely informational.
     pub last_run: Option<Observation<String>>,
 }
@@ -283,7 +273,7 @@ impl Default for AppState {
             settings: None,
             last_error: None,
             port_forwarding: Observation::now(PortForwarding::Idle),
-            egress: Egress::default(),
+            egress: None,
             last_run: None,
         }
     }
@@ -344,33 +334,5 @@ mod tests {
     fn absence_of_information_is_unknown_not_disconnected() {
         assert_eq!(AppState::default().status(), &ConnectionStatus::Unknown);
         assert!(!AppState::default().status().is_connected());
-    }
-
-    #[test]
-    fn egress_change_needs_the_same_endpoint() {
-        let ip_a: IpAddr = "1.2.3.4".parse().unwrap();
-        let ip_b: IpAddr = "5.6.7.8".parse().unwrap();
-        let reading = |endpoint, ip| EgressReading {
-            endpoint,
-            ip,
-            country: None,
-            asn_org: None,
-        };
-
-        let mut egress = Egress {
-            baseline: Some(Observation::now(reading(ProbeEndpoint::IfConfigCo, ip_a))),
-            current: Some(Observation::now(reading(ProbeEndpoint::IfConfigCo, ip_b))),
-        };
-        assert_eq!(egress.egress_changed(), Some(true));
-
-        egress.current = Some(Observation::now(reading(ProbeEndpoint::IfConfigCo, ip_a)));
-        assert_eq!(egress.egress_changed(), Some(false));
-
-        // Different endpoint: refuse to answer rather than compare across databases.
-        egress.current = Some(Observation::now(reading(ProbeEndpoint::IpInfoIo, ip_b)));
-        assert_eq!(egress.egress_changed(), None);
-
-        egress.baseline = None;
-        assert_eq!(egress.egress_changed(), None);
     }
 }

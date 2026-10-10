@@ -29,7 +29,7 @@ each exists because the CLI genuinely cannot do the job.
 |---|---|---|---|
 | 1 | `curl` to an IP-echo service | ground truth: the CLI's self-report is unreliable (measured: it printed `149.88.27.213` while real egress was `149.22.89.89`) | read-only, third party, keyless, no Proton data involved |
 | 2 | NAT-PMP to `10.2.0.1:5351` | the port-forwarding lease — the CLI only sets a preference and tells the user to run an external script | gateway is publicly documented by Proton, port is an IANA standard (RFC 6886); probe with opcode 0 first, degrade honestly |
-| 3 | A local SOCKS5 listener, and the kernel's route answer behind it | an application that must never touch the network without the VPN needs a door that closes by itself; nothing in `protonvpn` provides one | **off by default**, loopback only, IPv4 + `CONNECT` only, fails closed on evidence rather than on hope (§13) |
+| 3 | A local SOCKS5 listener, and the kernel's route answer behind it | an application that must never touch the network without the VPN needs a door that closes by itself; nothing in `protonvpn` provides one | **off by default**, loopback only, IPv4 + `CONNECT` only; the route it holds is re-read before every dial and by a 200 ms watchdog, so it closes on evidence rather than on hope (§13) |
 | 4 | `curl` to our own release page | an AppImage has no package manager behind it, and the file that would have to be replaced is the one currently running | two URLs, both ours — the `SHA256SUMS` of the latest release and the asset that file names — https only; the bytes are checked against that file; **nothing downloaded is ever executed**: the new image takes effect at the next start (§14) |
 
 The updater is the newest of them and the least entangled with the VPN: it speaks to nobody but
@@ -274,13 +274,24 @@ curl <ip-echo service>
 
 Purpose: obtain facts **de facto** rather than from self-reports.
 
-What it is genuinely good for:
+What it is used for: **one reading — where traffic leaves by now.** Taken at startup, after every
+connect and disconnect, on demand from the Overview, and every `verify_seconds` while the SOCKS5
+proxy is on. The card shows the address, the country and the network the service reports, each with
+the age of the answer (§7). Nothing is compared with anything.
 
-- **Is traffic actually flowing through the tunnel?** Compare the post-connection egress against
-  the pre-connection baseline. If the CLI says `Connected` and the probe returns the baseline
-  address, the tunnel is not carrying traffic. No CLI output can tell us that.
-- The CLI's own claim about the egress address is not usable: `Your new IP address is …` reported
-  `149.88.27.213` while actual egress was `149.22.89.89`. The probe is the authority.
+That is a deliberate retreat from an earlier design that read the address before connecting and
+again afterwards and turned "it changed" into a verdict. The comparison could not survive the case
+that matters: an application started while the tunnel is already up reads the tunnel's own address
+as its first, so "did it change?" answers *no* about a tunnel that is working perfectly — and that
+answer was being used to shut the proxy. Whether the address moved is something a person can see;
+the application no longer guesses at it.
+
+What the reading is still good for:
+
+- **A fact the CLI does not own.** The CLI's own claim about the egress address is not usable:
+  `Your new IP address is …` reported `149.88.27.213` while actual egress was `149.22.89.89`.
+- **A liveness check of the path**, while the proxy is on: two checks in a row that reach nothing
+  at all close the gate (§13.1, step 5).
 - **IPv6 leak check**, by querying the two address families separately. Verified working on
   `NL#662` (`2a02:6ea0:c041:6652::34`, a Proton/Datacamp prefix, distinct from the pre-VPN
   baseline `2001:bb6:582:5558:…` → no leak). Note IPv6 support varies by server: an IPv6 request
@@ -294,8 +305,9 @@ What it is genuinely good for:
 > `Server: … in <city>` line is therefore **dropped**: it would raise false alarms.
 > Country and city are worth *displaying*; they are not evidence.
 
-Comparison rule: baseline and post-connection readings must come from the **same** endpoint, so a
-database disagreement can never masquerade as a state change.
+Endpoint rule: the endpoint is picked **once** for the session, so two readings come from the same
+service and a database disagreement cannot look like a state change to the person comparing them.
+The application itself keeps one reading and compares nothing.
 
 Candidate endpoints (all keyless), returning JSON. Use a small fallback chain:
 
@@ -594,11 +606,11 @@ uses, moved from the public address to the local route.
 
 | Step | Mechanism | Cost | What it catches |
 |---|---|---|---|
-| 1 | **The reference.** While the CLI reports the tunnel down — and for three seconds after each such report, so the kernel can withdraw the tunnel's address — the route is sampled and remembered. One more sample is taken at startup, before the CLI has said anything; it runs whether or not the proxy is enabled, because it is four syscalls and a state the user may switch on at any moment. A reference is **withdrawn** whenever the gate is closed on suspicion (steps 4-6): evidence that the route moved under us is spent, and arming again needs a fresh look while the CLI says down | four syscalls, no packets | nothing on its own; it is what turns step 2 into evidence |
-| 2 | **The gate opens** only when the CLI reports `Connected` *and* the current route differs from the reference | one route read | a route that was never shown to be the tunnel. If the application starts while the VPN is already up, every route it has seen is the tunnel's own, so the gate stays **shut** and the settings page says why: reconnect once, and it arms |
+| 1 | **The pin.** When the CLI reports a connection, the kernel is asked which source address an off-link packet would use, and that answer is pinned. There is deliberately no earlier route to compare it with: an application started while the tunnel is already up has only ever seen the tunnel's own. The pin is what every later step is measured against | one route read | nothing on its own; it is the thing steps 3-6 can contradict |
+| 2 | **The gate opens** on that report and a readable route — `Connected` plus the kernel's answer, and nothing else | one route read | a CLI that says connected while the kernel has no route at all: the gate stays shut with that reason, and the retry loop asks again every two seconds until the kernel answers |
 | 3 | **Every dial** re-reads the route before connecting, and compares the socket's own `local_addr` after connecting — before one byte of the application's is relayed | one route read and one `getsockname`, no packets | the route moving while the dial was in flight (see §13.2 for how wide that window really is) |
-| 4 | **The watchdog** re-reads the route every 200 ms while the gate is open; disagreement closes the gate, drops every relayed connection, and withdraws the reference. It is a 200 ms poll, and the engine closes the gate on its next turn — so a new dial is refused at once and what is already relaying dies within about a quarter of a second | four syscalls, no packets | the tunnel going away, without waiting for a `status` poll |
-| 5 | **The egress watch** runs the sanctioned `curl` probe (exception #1) every `verify_seconds` (default 30, `0` = off — and nothing at all if the probe itself is switched off in «Опрос») while the CLI says connected: the pre-connection address coming back means the tunnel is not carrying traffic, whatever the CLI says | one HTTPS request | the tunnel that is still routed but no longer passes anything |
+| 4 | **The watchdog** re-reads the route every 200 ms while the gate is open; disagreement closes the gate, drops every relayed connection, and **spends the trust** — the CLI's word is not enough to pin another route. It is a 200 ms poll, and the engine closes the gate on its next turn: a new dial is refused at once and what is already relaying dies within about a quarter of a second | four syscalls, no packets | the tunnel going away, without waiting for a `status` poll — and a `Status: Connected` five minutes old, which must not open the door onto the network the laptop has since joined |
+| 5 | **The egress watch** runs the sanctioned `curl` probe (exception #1) every `verify_seconds` (default 30, `0` = off — and nothing at all if the probe itself is switched off in «Опрос») while the CLI says connected: it keeps the Overview's reading current, and two checks in a row that reach nothing at all close the gate | one HTTPS request | a path that answers nothing; **not** a tunnel that is routed but carries nothing — that reading is the user's to make, see §13.2 |
 | 6 | **Dial failures** that implicate the path — a timeout or an unreachable network, **twice in a row** — close the gate. A relayed connection clears the count, and so does a destination that answered and said no: both prove the path works | nothing | the same case, noticed sooner |
 
 A dial the gate refuses gets SOCKS5 reply `0x02` (not allowed by ruleset); the other replies are
@@ -607,15 +619,17 @@ name with no A record, `0x03` for a dial that came from the wrong address. The l
 the feature is enabled even when the gate is shut: an application that gets a refusal can say so,
 and — the paranoid reason — a port that is released is a port another process can take.
 
-**A gate closed on suspicion re-arms the same way it armed the first time**: the CLI has to report
-the tunnel down (so a fresh reference can be taken), and then up, with the route different from that
-reference. There is deliberately no "check again" that skips the first half — a different route is
-not a tunnel, and a proxy that can be talked into opening on one is not the proxy this section
-describes. The settings page says as much, and the remedy is one reconnect.
+**A gate closed because the route moved or was lost does not re-arm on the CLI's word.** The kernel's
+new answer is not evidence that the tunnel is there, and a stale `Connected` is exactly what a laptop
+that has just joined another network is told. What clears the spent trust is a report that is *not* a
+connection — a disconnect, a reconnect in progress, an error — after which the next `Connected` pins
+the route the kernel gives then. Any arm attempt in between (switching the proxy off and on again,
+changing its port) leaves the gate as it is, with the reason it closed for. The settings page says as
+much, and the remedy is one reconnect.
 
-Two closes do **not** spend the reference: a listener that never came up, and the user switching the
-proxy off. Fixing a port number says nothing about the route, and punishing it with a reconnect
-would be superstition rather than safety.
+Two closes do **not** spend the trust: a listener that never came up, and the user switching the
+proxy off. Fixing a port number says nothing about the route, and punishing it with a reconnect would
+be superstition rather than safety.
 
 ### 13.2 What it is not, and what it honestly cannot promise
 
@@ -627,8 +641,15 @@ would be superstition rather than safety.
   source address go with it, the application's bytes do not, and the connection is refused and
   reported as soon as the address is checked.
 - **The gate knows one fact: the source address the kernel picks.** A route change that keeps that
-  address — another gateway on the same interface — is invisible to it. That is the egress watch's
-  job, and it is why the two exist together.
+  address — another gateway on the same interface — is invisible to it.
+- **A tunnel that is routed but carries nothing is not detected.** The earlier design compared the
+  egress address with the one read before connecting, and that comparison is gone (§8): it answered
+  "no change" about a working tunnel whenever the application started while the tunnel was already
+  up. What is left is the route check, which sees a route that moved or vanished, and the outside
+  check, which sees a path that answers nothing. Between them sits the case they both miss: the
+  kernel keeps answering with the pinned source while packets leave by another way, or the tunnel
+  swallows them without a reply. The relayed connections will hang or die on their own, and the
+  reading on the Overview is what the user has to look at.
 - **DNS is the system resolver's**, after the gate and before the dial, exactly as it would be for
   the application without a proxy. We do not add a resolver, and we do not read `/etc/resolv.conf`.
 - **IPv6 destinations are refused** with `0x08` rather than guessed at: a hop the gate cannot pin
@@ -665,7 +686,7 @@ Two deliberate exceptions to the logging rule, both bounded:
   nobody needs.
 - **The background tunnel check** does not write a line per run — two a minute would drown a
   transcript that is supposed to be read. Its *reading* is state like any other: it lands in
-  `Egress::current` and the Overview shows it with its age (§7). What the console gets is the
+  `AppState::egress` and the Overview shows it with its age (§7). What the console gets is the
   conclusion: a gate that closed, and why.
 
 ---

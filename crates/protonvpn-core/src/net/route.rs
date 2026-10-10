@@ -10,7 +10,7 @@
 //! That is the only system fact the SOCKS5 proxy needs, and it is available without
 //! NetworkManager, without D-Bus and without touching a single Proton file: it is the same
 //! question any ordinary client asks the kernel when it opens a socket. We do not learn what the
-//! tunnel is; we learn only whether the kernel's answer has changed.
+//! tunnel is; we learn which address the kernel picks now, and whether it still picks it.
 
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::sync::Mutex;
